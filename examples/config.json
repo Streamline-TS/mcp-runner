@@ -1,0 +1,14 @@
+
+{
+    "mcpServers": {
+      "shell": {
+        "command": "uvx",
+        "args": [
+          "mcp-shell-server"
+        ],
+        "env": {
+          "ALLOW_COMMANDS": "ls,cat,pwd,grep,find,ps,lsusb,lspci,lsblk,df"
+        }
+      }
+    }
+}

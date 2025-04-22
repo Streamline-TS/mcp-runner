@@ -1,7 +1,5 @@
 mod parser;
-mod validator;
+pub mod validator;
 
 pub use parser::{Config, ServerConfig};
-
-// For now, re-export validator functions (to be implemented)
-// pub use validator::validate_config;
+pub use validator::validate_config;

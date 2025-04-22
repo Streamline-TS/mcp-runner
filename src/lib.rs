@@ -4,11 +4,13 @@ pub mod transport;
 pub mod error;
 pub mod client;
 
-use config::{Config, ServerConfig};
+use config::Config;
 use error::{Error, Result};
 use server::{ServerId, ServerProcess, ServerStatus};
 use std::collections::HashMap;
 use std::path::Path;
+use transport::StdioTransport;
+use client::McpClient;
 
 /// Configure and run MCP servers
 pub struct McpRunner {
@@ -69,7 +71,7 @@ impl McpRunner {
     
     /// Start all configured servers
     pub async fn start_all_servers(&mut self) -> Result<Vec<ServerId>> {
-        // Collect server names
+        // Collect server names first to avoid borrowing issues
         let server_names: Vec<String> = self.config.mcp_servers.keys()
             .map(|k| k.to_string())
             .collect();
@@ -111,5 +113,21 @@ impl McpRunner {
         self.server_names.get(name)
             .copied()
             .ok_or_else(|| Error::ServerNotFound(name.to_string()))
+    }
+    
+    /// Get a client for a server
+    pub fn get_client(&mut self, id: ServerId) -> Result<McpClient> {
+        let server = self.servers.get_mut(&id)
+            .ok_or_else(|| Error::ServerNotFound(format!("{:?}", id)))?;
+        
+        // Take the stdin and stdout from the server
+        let stdin = server.take_stdin()?;
+        let stdout = server.take_stdout()?;
+        
+        // Create the transport and client
+        let transport = StdioTransport::new(server.name().to_string(), stdin, stdout);
+        let client = McpClient::new(server.name().to_string(), transport);
+        
+        Ok(client)
     }
 }
