@@ -566,6 +566,7 @@ dependencies = [
  "anyhow",
  "assert_fs",
  "async-process",
+ "futures-lite",
  "jsonrpc-core",
  "mockall",
  "serde",
