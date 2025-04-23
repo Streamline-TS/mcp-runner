@@ -9,13 +9,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use uuid::Uuid;
+use tracing::{self, Instrument, span};
+use uuid::Uuid; // Remove unused Span import
 
 /// StdioTransport provides communication with an MCP server via standard I/O.
 ///
 /// This implementation uses JSON-RPC over standard input/output to communicate with
 /// an MCP server. It handles concurrent requests using a background task for reading
 /// responses and dispatches them to the appropriate handler.
+/// Most public methods are instrumented with `tracing` spans.
 ///
 /// # Example
 ///
@@ -67,6 +69,7 @@ impl StdioTransport {
     ///
     /// This constructor takes ownership of the child process's stdin and stdout,
     /// and sets up a background task to process incoming JSON-RPC messages.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Arguments
     ///
@@ -77,7 +80,9 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A new `StdioTransport` instance
+    #[tracing::instrument(skip(stdin, stdout), fields(name = %name))]
     pub fn new(name: String, stdin: ChildStdin, mut stdout: ChildStdout) -> Self {
+        tracing::debug!("Creating new StdioTransport");
         let stdin = Arc::new(Mutex::new(stdin));
         let response_handlers = Arc::new(Mutex::new(HashMap::<
             String,
@@ -87,8 +92,13 @@ impl StdioTransport {
         // Clone for the reader task
         let response_handlers_clone = Arc::clone(&response_handlers);
 
+        // Create the span for the reader task explicitly
+        let reader_span = span!(tracing::Level::INFO, "stdout_reader", name = %name);
+
         // Spawn a task to read from stdout
+        // Use .instrument() on the future
         let reader_task = tokio::spawn(async move {
+            tracing::debug!("Stdout reader task started");
             // Process stdout line by line
             let mut buffer = Vec::new();
             let mut buf = [0u8; 1];
@@ -96,27 +106,49 @@ impl StdioTransport {
             loop {
                 // Try to read a single byte
                 match stdout.read(&mut buf).await {
-                    Ok(0) => break, // EOF
+                    Ok(0) => {
+                        tracing::debug!("Stdout reached EOF");
+                        break;
+                    } // EOF
                     Ok(_) => {
                         if buf[0] == b'\n' {
                             // Process the line
                             if let Ok(line) = String::from_utf8(buffer.clone()) {
-                                // Collapse nested if let
-                                if let Ok(JsonRpcMessage::Response(response)) =
-                                    serde_json::from_str::<JsonRpcMessage>(&line)
-                                {
-                                    // Get ID as string
-                                    let id_str = match &response.id {
-                                        Value::String(s) => s.clone(),
-                                        Value::Number(n) => n.to_string(),
-                                        _ => continue, // Skip responses with other ID types
-                                    };
+                                tracing::trace!(output = "stdout", line = %line, "Received line");
+                                match serde_json::from_str::<JsonRpcMessage>(&line) {
+                                    Ok(JsonRpcMessage::Response(response)) => {
+                                        // Get ID as string
+                                        let id_str = match &response.id {
+                                            Value::String(s) => s.clone(),
+                                            Value::Number(n) => n.to_string(),
+                                            _ => {
+                                                tracing::warn!(response_id = ?response.id, "Received response with unexpected ID type");
+                                                continue;
+                                            }
+                                        };
+                                        tracing::debug!(response_id = %id_str, "Received JSON-RPC response");
 
-                                    // Send response to handler - handle lock errors gracefully
-                                    if let Ok(mut handlers) = response_handlers_clone.lock() {
-                                        if let Some(sender) = handlers.remove(&id_str) {
-                                            let _ = sender.send(response);
+                                        // Send response to handler - handle lock errors gracefully
+                                        if let Ok(mut handlers) = response_handlers_clone.lock() {
+                                            if let Some(sender) = handlers.remove(&id_str) {
+                                                if sender.send(response).is_err() {
+                                                    tracing::warn!(response_id = %id_str, "Response handler dropped before response could be sent");
+                                                }
+                                            } else {
+                                                tracing::warn!(response_id = %id_str, "Received response for unknown or timed out request");
+                                            }
+                                        } else {
+                                            tracing::error!("Response handler lock poisoned!");
                                         }
+                                    }
+                                    Ok(JsonRpcMessage::Request(req)) => {
+                                        tracing::warn!(method = %req.method, "Received unexpected JSON-RPC request from server");
+                                    }
+                                    Ok(JsonRpcMessage::Notification(notif)) => {
+                                        tracing::debug!(method = %notif.method, "Received JSON-RPC notification from server");
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(line = %line, error = %e, "Failed to parse line as JSON-RPC message");
                                     }
                                 }
                             }
@@ -125,10 +157,14 @@ impl StdioTransport {
                             buffer.push(buf[0]);
                         }
                     }
-                    Err(_) => break, // Error
+                    Err(e) => {
+                        tracing::error!(error = %e, "Error reading from stdout");
+                        break;
+                    } // Error
                 }
             }
-        });
+            tracing::debug!("Stdout reader task finished");
+        }.instrument(reader_span)); // Apply the span to the future
 
         Self {
             name,
@@ -151,6 +187,7 @@ impl StdioTransport {
     ///
     /// This is a helper function that handles the complexity of writing to
     /// stdin in a thread-safe and non-blocking way.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Arguments
     ///
@@ -159,7 +196,9 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A `Result<()>` indicating success or failure
+    #[tracing::instrument(skip(self, data), fields(name = %self.name))]
     async fn write_to_stdin(&self, data: Vec<u8>) -> Result<()> {
+        tracing::trace!(bytes_len = data.len(), "Writing to stdin");
         let stdin_clone = self.stdin.clone();
 
         tokio::task::spawn_blocking(move || -> Result<()> {
@@ -167,28 +206,28 @@ impl StdioTransport {
                 .lock()
                 .map_err(|_| Error::Communication("Failed to acquire stdin lock".to_string()))?;
 
-            // Use a blocking approach that doesn't require a nested runtime
             let mut stdin = stdin_lock;
 
-            // Create a scope to ensure the mutex is released as soon as possible
-            {
-                // Use the existing tokio runtime instead of creating a new one
-                futures_lite::future::block_on(async {
-                    stdin.write_all(&data).await.map_err(|e| {
-                        Error::Communication(format!("Failed to write to stdin: {}", e))
-                    })?;
-                    stdin.flush().await.map_err(|e| {
-                        Error::Communication(format!("Failed to flush stdin: {}", e))
-                    })?;
-                    Ok::<(), Error>(())
+            futures_lite::future::block_on(async {
+                stdin.write_all(&data).await.map_err(|e| {
+                    Error::Communication(format!("Failed to write to stdin: {}", e))
                 })?;
-            }
+                stdin
+                    .flush()
+                    .await
+                    .map_err(|e| Error::Communication(format!("Failed to flush stdin: {}", e)))?;
+                Ok::<(), Error>(())
+            })?;
 
             Ok(())
         })
         .await
-        .map_err(|e| Error::Communication(format!("Task join error: {}", e)))??;
+        .map_err(|e| {
+            tracing::error!(error = %e, "Stdin write task panicked");
+            Error::Communication(format!("Task join error: {}", e))
+        })??;
 
+        tracing::trace!("Finished writing to stdin");
         Ok(())
     }
 
@@ -196,6 +235,7 @@ impl StdioTransport {
     ///
     /// This method handles the details of sending a request, registering a response
     /// handler, and waiting for the response to arrive.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Arguments
     ///
@@ -204,18 +244,17 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A `Result<JsonRpcResponse>` containing the response if successful
+    #[tracing::instrument(skip(self, request), fields(name = %self.name, method = %request.method, request_id = ?request.id))]
     pub async fn send_request(&self, request: JsonRpcRequest) -> Result<JsonRpcResponse> {
-        // Convert ID to string for map lookup
+        tracing::debug!("Sending JSON-RPC request");
         let id_str = match &request.id {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
             _ => return Err(Error::Communication("Invalid request ID type".to_string())),
         };
 
-        // Create a channel for receiving the response
         let (sender, receiver) = oneshot::channel();
 
-        // Register the response handler
         {
             let mut handlers = self.response_handlers.lock().map_err(|_| {
                 Error::Communication("Failed to lock response handlers".to_string())
@@ -223,26 +262,27 @@ impl StdioTransport {
             handlers.insert(id_str, sender);
         }
 
-        // Serialize the request
         let request_json = serde_json::to_string(&request)
             .map_err(|e| Error::Serialization(format!("Failed to serialize request: {}", e)))?;
+        tracing::trace!(request_json = %request_json, "Sending request JSON");
         let request_bytes = request_json.into_bytes();
         let mut request_bytes_with_newline = request_bytes;
         request_bytes_with_newline.push(b'\n');
 
-        // Send the request
         self.write_to_stdin(request_bytes_with_newline).await?;
 
-        // Wait for the response
-        let response = receiver
-            .await
-            .map_err(|_| Error::Communication("Failed to receive response".to_string()))?;
+        tracing::debug!("Waiting for response");
+        let response = receiver.await.map_err(|_| {
+            tracing::warn!("Sender dropped before response received (likely timeout or closed)");
+            Error::Communication("Failed to receive response".to_string())
+        })?;
 
-        // Check for error
-        if let Some(error) = response.error {
-            return Err(Error::JsonRpc(error.message));
+        if let Some(error) = &response.error {
+            tracing::error!(error_code = error.code, error_message = %error.message, "Received JSON-RPC error response");
+            return Err(Error::JsonRpc(error.message.clone()));
         }
 
+        tracing::debug!("Received successful response");
         Ok(response)
     }
 
@@ -250,6 +290,7 @@ impl StdioTransport {
     ///
     /// Unlike requests, notifications don't expect a response, so this method
     /// just sends the message without setting up a response handler.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Arguments
     ///
@@ -258,16 +299,17 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A `Result<()>` indicating success or failure
+    #[tracing::instrument(skip(self, notification), fields(name = %self.name, method = notification.get("method").and_then(|v| v.as_str())))]
     pub async fn send_notification(&self, notification: serde_json::Value) -> Result<()> {
-        // Serialize the notification
+        tracing::debug!("Sending JSON-RPC notification");
         let notification_json = serde_json::to_string(&notification).map_err(|e| {
             Error::Serialization(format!("Failed to serialize notification: {}", e))
         })?;
+        tracing::trace!(notification_json = %notification_json, "Sending notification JSON");
         let notification_bytes = notification_json.into_bytes();
         let mut notification_bytes_with_newline = notification_bytes;
         notification_bytes_with_newline.push(b'\n');
 
-        // Send the notification using our helper method
         self.write_to_stdin(notification_bytes_with_newline).await
     }
 
@@ -275,12 +317,14 @@ impl StdioTransport {
     ///
     /// Sends the `notifications/initialized` notification to the server,
     /// indicating that the client is ready to communicate.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Returns
     ///
     /// A `Result<()>` indicating success or failure
+    #[tracing::instrument(skip(self), fields(name = %self.name))]
     pub async fn initialize(&self) -> Result<()> {
-        // Send initialized notification
+        tracing::info!("Initializing MCP connection");
         let notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
@@ -291,10 +335,14 @@ impl StdioTransport {
 
     /// Lists available tools provided by the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Returns
     ///
     /// A `Result<Vec<Value>>` containing the list of tools if successful
+    #[tracing::instrument(skip(self), fields(name = %self.name))]
     pub async fn list_tools(&self) -> Result<Vec<Value>> {
+        tracing::debug!("Listing tools");
         let request_id = Uuid::new_v4().to_string();
         let request = JsonRpcRequest::list_tools(request_id);
 
@@ -311,6 +359,8 @@ impl StdioTransport {
 
     /// Calls a tool provided by the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Arguments
     ///
     /// * `name` - The name of the tool to call
@@ -319,9 +369,15 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A `Result<Value>` containing the tool's response if successful
-    pub async fn call_tool(&self, name: impl Into<String>, args: Value) -> Result<Value> {
+    #[tracing::instrument(skip(self, args), fields(name = %self.name, tool_name = %name.as_ref()))]
+    pub async fn call_tool(
+        &self,
+        name: impl AsRef<str> + std::fmt::Debug,
+        args: Value,
+    ) -> Result<Value> {
+        tracing::debug!(args = ?args, "Calling tool");
         let request_id = Uuid::new_v4().to_string();
-        let request = JsonRpcRequest::call_tool(request_id, name, args);
+        let request = JsonRpcRequest::call_tool(request_id, name.as_ref().to_string(), args);
 
         let response = self.send_request(request).await?;
 
@@ -332,10 +388,14 @@ impl StdioTransport {
 
     /// Lists available resources provided by the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Returns
     ///
     /// A `Result<Vec<Value>>` containing the list of resources if successful
+    #[tracing::instrument(skip(self), fields(name = %self.name))]
     pub async fn list_resources(&self) -> Result<Vec<Value>> {
+        tracing::debug!("Listing resources");
         let request_id = Uuid::new_v4().to_string();
         let request = JsonRpcRequest::list_resources(request_id);
 
@@ -352,6 +412,8 @@ impl StdioTransport {
 
     /// Retrieves a specific resource from the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Arguments
     ///
     /// * `uri` - The URI of the resource to retrieve
@@ -359,9 +421,11 @@ impl StdioTransport {
     /// # Returns
     ///
     /// A `Result<Value>` containing the resource data if successful
-    pub async fn get_resource(&self, uri: impl Into<String>) -> Result<Value> {
+    #[tracing::instrument(skip(self), fields(name = %self.name, uri = %uri.as_ref()))]
+    pub async fn get_resource(&self, uri: impl AsRef<str> + std::fmt::Debug) -> Result<Value> {
+        tracing::debug!("Getting resource");
         let request_id = Uuid::new_v4().to_string();
-        let request = JsonRpcRequest::get_resource(request_id, uri);
+        let request = JsonRpcRequest::get_resource(request_id, uri.as_ref().to_string());
 
         let response = self.send_request(request).await?;
 
@@ -374,21 +438,20 @@ impl StdioTransport {
     ///
     /// This method should be called when the transport is no longer needed
     /// to ensure proper cleanup of background tasks and resources.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Returns
     ///
     /// A `Result<()>` indicating success or failure
+    #[tracing::instrument(skip(self), fields(name = %self.name))]
     pub async fn close(&mut self) -> Result<()> {
-        // Drop the reader task
+        tracing::info!("Closing transport");
         if let Some(task) = self.reader_task.take() {
             task.abort();
-            // Ignore errors from abort as it's expected
             let _ = task.await;
         }
 
-        // Clear any pending response handlers to avoid resource leaks
         if let Ok(mut handlers) = self.response_handlers.lock() {
-            // Send errors to all pending handlers
             for (_, sender) in handlers.drain() {
                 let _ = sender.send(JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
@@ -409,22 +472,32 @@ impl StdioTransport {
 
 #[async_trait]
 impl Transport for StdioTransport {
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(name = %self.name()))]
     async fn initialize(&self) -> Result<()> {
         self.initialize().await
     }
 
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(name = %self.name()))]
     async fn list_tools(&self) -> Result<Vec<Value>> {
         self.list_tools().await
     }
 
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self, args), fields(name = %self.name(), tool_name = %name))]
     async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
         self.call_tool(name.to_string(), args).await
     }
 
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(name = %self.name()))]
     async fn list_resources(&self) -> Result<Vec<Value>> {
         self.list_resources().await
     }
 
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(name = %self.name(), uri = %uri))]
     async fn get_resource(&self, uri: &str) -> Result<Value> {
         self.get_resource(uri.to_string()).await
     }

@@ -78,9 +78,14 @@ pub use server::{ServerId, ServerProcess, ServerStatus};
 
 use std::collections::HashMap;
 use std::path::Path;
-use transport::StdioTransport;
+use tracing;
+use transport::StdioTransport; // Import tracing
 
 /// Configure and run MCP servers
+///
+/// This struct is the main entry point for managing MCP server lifecycles
+/// and obtaining clients to interact with them.
+/// All public methods are instrumented with `tracing` spans.
 pub struct McpRunner {
     /// Configuration
     config: Config,
@@ -92,20 +97,31 @@ pub struct McpRunner {
 
 impl McpRunner {
     /// Create a new MCP runner from a configuration file path
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(path), fields(config_path = ?path.as_ref()))]
     pub fn from_config_file(path: impl AsRef<Path>) -> Result<Self> {
+        tracing::info!("Loading configuration from file");
         let config = Config::from_file(path)?;
         Ok(Self::new(config))
     }
 
     /// Create a new MCP runner from a configuration string
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(config))]
     pub fn from_config_str(config: &str) -> Result<Self> {
-        // Update call site
+        tracing::info!("Loading configuration from string");
         let config = Config::parse_from_str(config)?;
         Ok(Self::new(config))
     }
 
     /// Create a new MCP runner from a configuration
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(config), fields(num_servers = config.mcp_servers.len()))]
     pub fn new(config: Config) -> Self {
+        tracing::info!("Creating new McpRunner");
         Self {
             config,
             servers: HashMap::new(),
@@ -114,35 +130,53 @@ impl McpRunner {
     }
 
     /// Start a specific MCP server
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %name))]
     pub async fn start_server(&mut self, name: &str) -> Result<ServerId> {
         // Check if server is already running
         if let Some(id) = self.server_names.get(name) {
+            tracing::debug!(server_id = %id, "Server already running");
             return Ok(*id);
         }
 
+        tracing::info!("Attempting to start server");
         // Get server configuration
         let config = self
             .config
             .mcp_servers
             .get(name)
-            .ok_or_else(|| Error::ServerNotFound(name.to_string()))?
+            .ok_or_else(|| {
+                tracing::error!("Configuration not found for server");
+                Error::ServerNotFound(name.to_string())
+            })?
             .clone();
 
         // Create and start server process
         let mut server = ServerProcess::new(name.to_string(), config);
         let id = server.id();
+        tracing::debug!(server_id = %id, "Created ServerProcess instance");
 
-        server.start().await?;
+        server.start().await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to start server process");
+            e
+        })?;
 
         // Store server
+        tracing::debug!(server_id = %id, "Storing running server process");
         self.servers.insert(id, server);
         self.server_names.insert(name.to_string(), id);
 
+        tracing::info!(server_id = %id, "Server started successfully");
         Ok(id)
     }
 
     /// Start all configured servers
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
     pub async fn start_all_servers(&mut self) -> Result<Vec<ServerId>> {
+        tracing::info!("Starting all configured servers");
         // Collect server names first to avoid borrowing issues
         let server_names: Vec<String> = self
             .config
@@ -150,63 +184,113 @@ impl McpRunner {
             .keys()
             .map(|k| k.to_string())
             .collect();
+        tracing::debug!(servers_to_start = ?server_names);
 
         let mut ids = Vec::new();
+        let mut errors = Vec::new();
 
         for name in server_names {
-            let id = self.start_server(&name).await?;
-            ids.push(id);
+            match self.start_server(&name).await {
+                Ok(id) => ids.push(id),
+                Err(e) => {
+                    tracing::error!(server_name = %name, error = %e, "Failed to start server");
+                    errors.push((name, e));
+                }
+            }
         }
 
+        if !errors.is_empty() {
+            tracing::warn!(num_failed = errors.len(), "Some servers failed to start");
+            return Err(errors.remove(0).1);
+        }
+
+        tracing::info!(num_started = ids.len(), "Finished starting all servers");
         Ok(ids)
     }
 
     /// Stop a running server
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub async fn stop_server(&mut self, id: ServerId) -> Result<()> {
+        tracing::info!("Attempting to stop server");
         if let Some(mut server) = self.servers.remove(&id) {
-            // Remove from server_names
-            self.server_names.remove(server.name());
+            let name = server.name().to_string();
+            tracing::debug!(server_name = %name, "Found server process to stop");
+            self.server_names.remove(&name);
 
-            // Stop the server
-            server.stop().await?;
+            server.stop().await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to stop server process");
+                e
+            })?;
 
+            tracing::info!("Server stopped successfully");
             Ok(())
         } else {
+            tracing::warn!("Attempted to stop a server that was not found or not running");
             Err(Error::ServerNotFound(format!("{:?}", id)))
         }
     }
 
     /// Get server status
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub fn server_status(&self, id: ServerId) -> Result<ServerStatus> {
+        tracing::debug!("Getting server status");
         self.servers
             .get(&id)
-            .map(|server| server.status())
-            .ok_or_else(|| Error::ServerNotFound(format!("{:?}", id)))
+            .map(|server| {
+                let status = server.status();
+                tracing::trace!(status = ?status);
+                status
+            })
+            .ok_or_else(|| {
+                tracing::warn!("Status requested for unknown server");
+                Error::ServerNotFound(format!("{:?}", id))
+            })
     }
 
     /// Get server ID by name
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %name))]
     pub fn get_server_id(&self, name: &str) -> Result<ServerId> {
-        self.server_names
-            .get(name)
-            .copied()
-            .ok_or_else(|| Error::ServerNotFound(name.to_string()))
+        tracing::debug!("Getting server ID by name");
+        self.server_names.get(name).copied().ok_or_else(|| {
+            tracing::warn!("Server ID requested for unknown server name");
+            Error::ServerNotFound(name.to_string())
+        })
     }
 
     /// Get a client for a server
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub fn get_client(&mut self, id: ServerId) -> Result<McpClient> {
-        let server = self
-            .servers
-            .get_mut(&id)
-            .ok_or_else(|| Error::ServerNotFound(format!("{:?}", id)))?;
+        tracing::info!("Getting client for server");
+        let server = self.servers.get_mut(&id).ok_or_else(|| {
+            tracing::error!("Client requested for unknown or stopped server");
+            Error::ServerNotFound(format!("{:?}", id))
+        })?;
+        let server_name = server.name().to_string();
+        tracing::debug!(server_name = %server_name, "Found server process");
 
-        // Take the stdin and stdout from the server
-        let stdin = server.take_stdin()?;
-        let stdout = server.take_stdout()?;
+        tracing::debug!("Taking stdin/stdout from server process");
+        let stdin = server.take_stdin().map_err(|e| {
+            tracing::error!(error = %e, "Failed to take stdin from server");
+            e
+        })?;
+        let stdout = server.take_stdout().map_err(|e| {
+            tracing::error!(error = %e, "Failed to take stdout from server");
+            e
+        })?;
 
-        // Create the transport and client
-        let transport = StdioTransport::new(server.name().to_string(), stdin, stdout);
-        let client = McpClient::new(server.name().to_string(), transport);
+        tracing::debug!("Creating StdioTransport and McpClient");
+        let transport = StdioTransport::new(server_name.clone(), stdin, stdout);
+        let client = McpClient::new(server_name, transport);
 
+        tracing::info!("Client created successfully");
         Ok(client)
     }
 }

@@ -3,7 +3,8 @@ use crate::config::ServerConfig;
 use crate::error::{Error, Result};
 use async_process::{Child, Command, Stdio};
 use std::fmt;
-use uuid::Uuid; // Import fmt
+use tracing;
+use uuid::Uuid; // Import tracing
 
 /// Unique identifier for a server process
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -38,7 +39,11 @@ pub enum ServerStatus {
     Failed,
 }
 
-/// A running MCP server process
+/// Represents a running MCP server process.
+///
+/// Manages the lifecycle of a single MCP server, including starting, stopping,
+/// and providing access to its standard I/O streams.
+/// All public methods are instrumented with `tracing` spans.
 pub struct ServerProcess {
     /// Server configuration
     config: ServerConfig,
@@ -53,7 +58,10 @@ pub struct ServerProcess {
 }
 
 impl ServerProcess {
-    /// Create a new server process from configuration
+    /// Create a new server process instance.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(config), fields(server_name = %name))]
     pub fn new(name: String, config: ServerConfig) -> Self {
         Self {
             config,
@@ -74,17 +82,25 @@ impl ServerProcess {
         &self.name
     }
 
-    /// Get the server status
+    /// Get the current status of the server.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
     pub fn status(&self) -> ServerStatus {
         self.status
     }
 
-    /// Start the server process
+    /// Start the server process.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
     pub async fn start(&mut self) -> Result<()> {
         if self.child.is_some() {
+            tracing::warn!("Attempted to start an already running server");
             return Err(Error::AlreadyRunning);
         }
 
+        tracing::info!("Starting server process");
         self.status = ServerStatus::Starting;
 
         let mut command = Command::new(&self.config.command);
@@ -102,37 +118,53 @@ impl ServerProcess {
             .stderr(Stdio::piped());
 
         // Start the process
-        let child = command
-            .spawn()
-            .map_err(|e| Error::Process(format!("Failed to start process: {}", e)))?;
+        tracing::debug!(command = ?self.config.command, args = ?self.config.args, env = ?self.config.env, "Spawning process");
+        let child = command.spawn().map_err(|e| {
+            tracing::error!("Failed to spawn process: {}", e);
+            Error::Process(format!("Failed to start process: {}", e))
+        })?;
 
         self.child = Some(child);
         self.status = ServerStatus::Running;
+        tracing::info!("Server process started successfully");
 
         Ok(())
     }
 
-    /// Stop the server process
+    /// Stop the server process.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
+            tracing::info!("Stopping server process");
             self.status = ServerStatus::Stopping;
 
             // Try to kill the process gracefully
             if let Err(e) = child.kill() {
-                return Err(Error::Process(format!("Failed to kill process: {}", e)));
+                tracing::error!("Failed to kill process: {}", e);
+                // We still attempt to wait for the process below, so don't return early
+                // return Err(Error::Process(format!("Failed to kill process: {}", e)));
             }
 
             // Wait for the process to exit
-            let _ = child.status().await;
+            match child.status().await {
+                Ok(status) => tracing::info!(exit_status = ?status, "Server process stopped"),
+                Err(e) => tracing::warn!("Failed to get exit status after stopping: {}", e),
+            }
 
             self.status = ServerStatus::Stopped;
             Ok(())
         } else {
+            tracing::warn!("Attempted to stop a server that was not running");
             Err(Error::NotRunning)
         }
     }
 
-    /// Take the stdin pipe from the process
+    /// Take ownership of the server's stdin handle.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
     pub fn take_stdin(&mut self) -> Result<async_process::ChildStdin> {
         if let Some(child) = &mut self.child {
             child.stdin.take().ok_or_else(|| {
@@ -143,7 +175,10 @@ impl ServerProcess {
         }
     }
 
-    /// Take the stdout pipe from the process
+    /// Take ownership of the server's stdout handle.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
     pub fn take_stdout(&mut self) -> Result<async_process::ChildStdout> {
         if let Some(child) = &mut self.child {
             child.stdout.take().ok_or_else(|| {

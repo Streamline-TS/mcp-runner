@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time;
+use tracing;
 
 /// Server health status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +45,11 @@ impl Default for ServerMonitorConfig {
     }
 }
 
-/// Server monitor
+/// Monitors the health of running MCP servers.
+///
+/// Periodically checks the status of registered servers and can optionally
+/// trigger restarts based on configuration.
+/// All public methods are instrumented with `tracing` spans.
 pub struct ServerMonitor {
     /// Lifecycle manager
     lifecycle_manager: Arc<ServerLifecycleManager>,
@@ -64,10 +69,14 @@ pub struct ServerMonitor {
 
 impl ServerMonitor {
     /// Create a new server monitor
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(lifecycle_manager, config))]
     pub fn new(
         lifecycle_manager: Arc<ServerLifecycleManager>,
         config: ServerMonitorConfig,
     ) -> Self {
+        tracing::info!(config = ?config, "Creating new ServerMonitor");
         Self {
             lifecycle_manager,
             health_statuses: Arc::new(Mutex::new(HashMap::new())),
@@ -80,17 +89,21 @@ impl ServerMonitor {
     }
 
     /// Start the monitor
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
     pub fn start(&mut self) -> Result<()> {
         {
-            let mut running = self
-                .running
-                .lock()
-                .map_err(|_| Error::Other("Failed to lock running flag".to_string()))?;
+            let mut running = self.running.lock().map_err(|_| {
+                tracing::error!("Failed to lock running flag");
+                Error::Other("Failed to lock running flag".to_string())
+            })?;
 
             if *running {
+                tracing::debug!("Monitor already running");
                 return Ok(());
             }
-
+            tracing::info!("Starting monitor task");
             *running = true;
         }
 
@@ -102,6 +115,7 @@ impl ServerMonitor {
         let config = self.config.clone();
 
         let task = tokio::spawn(async move {
+            tracing::info!("Monitor loop started");
             let mut interval = time::interval(config.check_interval);
 
             loop {
@@ -111,19 +125,26 @@ impl ServerMonitor {
                 {
                     let running_guard = running.lock().unwrap();
                     if !*running_guard {
+                        tracing::info!("Monitor loop stopping");
                         break;
                     }
                 }
+                tracing::debug!("Running health check cycle");
 
                 // Get a snapshot of servers we need to check
-                // For now, we'll just use the servers we already know about
                 let server_ids_to_check = {
                     let health_guard = health_statuses.lock().unwrap();
                     health_guard.keys().cloned().collect::<Vec<_>>()
                 };
+                tracing::trace!(servers = ?server_ids_to_check, "Checking health for servers");
 
                 // Check each server
                 for server_id in server_ids_to_check {
+                    let check_span =
+                        tracing::info_span!("server_health_check", server_id = %server_id);
+                    let _check_guard = check_span.enter();
+
+                    tracing::debug!("Checking server health");
                     // Record check time
                     {
                         let mut checked = last_checked.lock().unwrap();
@@ -131,35 +152,60 @@ impl ServerMonitor {
                     }
 
                     // Get current server status
-                    if let Ok(status) = lifecycle_manager.get_status(server_id) {
-                        // Determine health based on status
-                        let health = match status {
-                            ServerStatus::Running => ServerHealth::Healthy,
-                            ServerStatus::Failed => ServerHealth::Unhealthy,
-                            _ => ServerHealth::Unknown,
-                        };
+                    match lifecycle_manager.get_status(server_id) {
+                        Ok(status) => {
+                            tracing::debug!(current_status = ?status, "Got server status");
+                            let health = match status {
+                                ServerStatus::Running => ServerHealth::Healthy,
+                                ServerStatus::Failed => ServerHealth::Unhealthy,
+                                _ => ServerHealth::Unknown,
+                            };
+                            tracing::info!(health = ?health, "Determined server health");
 
-                        // Update health status
-                        {
-                            let mut statuses = health_statuses.lock().unwrap();
-                            statuses.insert(server_id, health);
+                            {
+                                let mut statuses = health_statuses.lock().unwrap();
+                                statuses.insert(server_id, health);
+                            }
+
+                            {
+                                let mut counts = failure_counts.lock().unwrap();
+                                if health == ServerHealth::Unhealthy {
+                                    let count = counts.entry(server_id).or_insert(0);
+                                    *count += 1;
+                                    tracing::warn!(
+                                        failure_count = *count,
+                                        "Server health check failed"
+                                    );
+
+                                    if config.auto_restart
+                                        && *count >= config.max_consecutive_failures
+                                    {
+                                        tracing::warn!(
+                                            threshold = config.max_consecutive_failures,
+                                            "Failure threshold reached, attempting auto-restart"
+                                        );
+                                        *count = 0;
+                                        tracing::info!(
+                                            "Auto-restart triggered (logic not implemented)"
+                                        );
+                                    }
+                                } else {
+                                    if counts.contains_key(&server_id)
+                                        && *counts.get(&server_id).unwrap() > 0
+                                    {
+                                        tracing::info!("Resetting failure count");
+                                        counts.insert(server_id, 0);
+                                    }
+                                }
+                            }
                         }
-
-                        // Update failure counts for unhealthy servers
-                        if health == ServerHealth::Unhealthy {
-                            let mut counts = failure_counts.lock().unwrap();
-                            let count = counts.entry(server_id).or_insert(0);
-                            *count += 1;
-
-                            // TODO: Implement auto-restart logic here when needed
-                        } else {
-                            // Reset failure count for healthy servers
-                            let mut counts = failure_counts.lock().unwrap();
-                            counts.insert(server_id, 0);
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to get server status during health check");
                         }
                     }
                 }
             }
+            tracing::info!("Monitor loop finished");
         });
 
         self.monitor_task = Some(task);
@@ -168,21 +214,26 @@ impl ServerMonitor {
     }
 
     /// Stop the monitor
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
     pub fn stop(&mut self) -> Result<()> {
         {
-            let mut running = self
-                .running
-                .lock()
-                .map_err(|_| Error::Other("Failed to lock running flag".to_string()))?;
+            let mut running = self.running.lock().map_err(|_| {
+                tracing::error!("Failed to lock running flag");
+                Error::Other("Failed to lock running flag".to_string())
+            })?;
 
             if !*running {
+                tracing::debug!("Monitor already stopped");
                 return Ok(());
             }
-
+            tracing::info!("Stopping monitor task");
             *running = false;
         }
 
         if let Some(task) = self.monitor_task.take() {
+            tracing::debug!("Aborting monitor task handle");
             task.abort();
         }
 
@@ -190,35 +241,40 @@ impl ServerMonitor {
     }
 
     /// Get server health
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub fn get_health(&self, id: ServerId) -> Result<ServerHealth> {
-        let health_statuses = self
-            .health_statuses
-            .lock()
-            .map_err(|_| Error::Other("Failed to lock health statuses".to_string()))?;
+        tracing::debug!("Getting server health status");
+        let health_statuses = self.health_statuses.lock().map_err(|_| {
+            tracing::error!("Failed to lock health statuses");
+            Error::Other("Failed to lock health statuses".to_string())
+        })?;
 
-        health_statuses
-            .get(&id)
-            .copied()
-            .ok_or_else(|| Error::ServerNotFound(format!("{:?}", id)))
+        health_statuses.get(&id).copied().ok_or_else(|| {
+            tracing::warn!("Health status requested for unknown server");
+            Error::ServerNotFound(format!("{:?}", id))
+        })
     }
 
     /// Force health check for a server
+    ///
+    /// This method is instrumented with `tracing`.
+    // Note: This is a simplified version, real health checks might involve communication
+    #[tracing::instrument(skip(self), fields(server_id = %id, server_name = %name))]
     pub async fn check_health(&self, id: ServerId, name: &str) -> Result<ServerHealth> {
-        // In a real implementation, this would perform an actual health check
-        // For now, we'll just simulate a health check
+        tracing::info!("Forcing health check");
 
-        // Record the check time
         {
             let mut last_checked = self
                 .last_checked
                 .lock()
                 .map_err(|_| Error::Other("Failed to lock last checked times".to_string()))?;
-
             last_checked.insert(id, Instant::now());
         }
 
-        // Get current status
         let status = self.lifecycle_manager.get_status(id)?;
+        tracing::debug!(current_status = ?status, "Got server status for forced check");
 
         let health = match status {
             ServerStatus::Running => ServerHealth::Healthy,
@@ -227,18 +283,16 @@ impl ServerMonitor {
             ServerStatus::Stopped => ServerHealth::Unknown,
             ServerStatus::Failed => ServerHealth::Unhealthy,
         };
+        tracing::info!(health = ?health, "Determined server health from forced check");
 
-        // Update health status
         {
             let mut health_statuses = self
                 .health_statuses
                 .lock()
                 .map_err(|_| Error::Other("Failed to lock health statuses".to_string()))?;
-
             health_statuses.insert(id, health);
         }
 
-        // Update failure count
         {
             let mut failure_counts = self
                 .failure_counts
@@ -248,25 +302,33 @@ impl ServerMonitor {
             if health == ServerHealth::Unhealthy {
                 let count = failure_counts.entry(id).or_insert(0);
                 *count += 1;
+                tracing::warn!(
+                    failure_count = *count,
+                    "Server health check failed (forced)"
+                );
 
-                // Auto-restart if needed
                 if self.config.auto_restart && *count >= self.config.max_consecutive_failures {
-                    // Reset count
+                    tracing::warn!(
+                        threshold = self.config.max_consecutive_failures,
+                        "Failure threshold reached (forced), attempting auto-restart"
+                    );
                     *count = 0;
 
-                    // Record restart event
                     self.lifecycle_manager.record_event(
                         id,
                         name.to_string(),
                         ServerLifecycleEvent::Restarted,
-                        Some("Auto-restart after consecutive failures".to_string()),
+                        Some("Auto-restart after consecutive failures (forced check)".to_string()),
                     )?;
-
-                    // In a real implementation, we would trigger a restart here
+                    tracing::info!(
+                        "Auto-restart triggered by forced check (logic not implemented)"
+                    );
                 }
             } else {
-                // Reset count on successful check
-                failure_counts.insert(id, 0);
+                if failure_counts.contains_key(&id) && *failure_counts.get(&id).unwrap() > 0 {
+                    tracing::info!("Resetting failure count (forced check)");
+                    failure_counts.insert(id, 0);
+                }
             }
         }
 

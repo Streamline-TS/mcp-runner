@@ -14,6 +14,7 @@ use crate::transport::Transport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
+use tracing; // Import tracing
 
 /// Represents an MCP tool with its metadata.
 ///
@@ -99,6 +100,7 @@ pub struct Resource {
 /// Model Context Protocol servers. It abstracts away the details of the
 /// transport layer and JSON-RPC protocol, offering a simple API for listing
 /// and calling tools, and accessing resources.
+/// All public methods are instrumented with `tracing` spans.
 ///
 /// # Examples
 ///
@@ -137,7 +139,7 @@ pub struct Resource {
 /// }
 ///
 /// // Call the fetch tool
-/// #[derive(serde::Serialize)]
+/// #[derive(serde::Serialize, Debug)]
 /// struct FetchInput {
 ///     url: String,
 /// }
@@ -161,6 +163,8 @@ pub struct McpClient {
 impl McpClient {
     /// Creates a new MCP client with the specified name and transport.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Arguments
     ///
     /// * `name` - A name for this client, typically the server name
@@ -169,7 +173,9 @@ impl McpClient {
     /// # Returns
     ///
     /// A new `McpClient` instance
+    #[tracing::instrument(skip(transport), fields(client_name = %name))]
     pub fn new(name: String, transport: impl Transport + 'static) -> Self {
+        tracing::info!("Creating new McpClient");
         Self {
             name,
             transport: Arc::new(transport),
@@ -189,29 +195,46 @@ impl McpClient {
     ///
     /// This method should be called before any other methods to ensure
     /// the server is ready to accept requests.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Returns
     ///
     /// A `Result<()>` indicating success or failure
+    #[tracing::instrument(skip(self), fields(client_name = %self.name))]
     pub async fn initialize(&self) -> Result<()> {
-        self.transport.initialize().await
+        tracing::info!("Initializing client connection");
+        self.transport.initialize().await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to initialize transport");
+            e
+        })
     }
 
     /// Lists all available tools provided by the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Returns
     ///
     /// A `Result<Vec<Tool>>` containing descriptions of available tools if successful
+    #[tracing::instrument(skip(self), fields(client_name = %self.name))]
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
+        tracing::debug!("Listing tools via transport");
         let tools_json = self.transport.list_tools().await?;
+        tracing::trace!(raw_tools = ?tools_json, "Received raw tools list");
 
         let mut tools = Vec::new();
         for tool_value in tools_json {
-            if let Ok(tool) = serde_json::from_value(tool_value) {
-                tools.push(tool);
+            match serde_json::from_value::<Tool>(tool_value.clone()) {
+                Ok(tool) => {
+                    tracing::trace!(tool_name = %tool.name, "Successfully deserialized tool");
+                    tools.push(tool);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, value = ?tool_value, "Failed to deserialize tool from value");
+                }
             }
         }
-
+        tracing::debug!(num_tools = tools.len(), "Finished listing tools");
         Ok(tools)
     }
 
@@ -219,10 +242,11 @@ impl McpClient {
     ///
     /// This method provides a strongly-typed interface for tool calls,
     /// where the input and output types are specified as generic parameters.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The input type, which must be serializable to JSON
+    /// * `T` - The input type, which must be serializable to JSON and implement `Debug`
     /// * `R` - The output type, which must be deserializable from JSON
     ///
     /// # Arguments
@@ -240,39 +264,57 @@ impl McpClient {
     /// * The tool call fails
     /// * The arguments cannot be serialized
     /// * The result cannot be deserialized to type R
+    #[tracing::instrument(skip(self, args), fields(client_name = %self.name, tool_name = %name))]
     pub async fn call_tool<T, R>(&self, name: &str, args: &T) -> Result<R>
     where
-        T: Serialize,
+        T: Serialize + std::fmt::Debug,
         R: for<'de> Deserialize<'de>,
     {
-        // Serialize args to a Value
+        tracing::debug!(args = ?args, "Calling tool");
         let args_value = serde_json::to_value(args).map_err(|e| {
+            tracing::error!(error = %e, "Failed to serialize tool arguments");
             Error::Serialization(format!("Failed to serialize tool arguments: {}", e))
         })?;
+        tracing::trace!(args_json = ?args_value, "Serialized arguments");
 
-        // Call the tool
         let result_value = self.transport.call_tool(name, args_value).await?;
+        tracing::trace!(result_json = ?result_value, "Received raw tool result");
 
-        // Deserialize the result
-        serde_json::from_value(result_value)
-            .map_err(|e| Error::Serialization(format!("Failed to deserialize tool result: {}", e)))
+        serde_json::from_value(result_value.clone()).map_err(|e| {
+            tracing::error!(error = %e, value = ?result_value, "Failed to deserialize tool result");
+            Error::Serialization(format!("Failed to deserialize tool result: {}", e))
+        })
     }
 
     /// Lists all available resources provided by the MCP server.
     ///
+    /// This method is instrumented with `tracing`.
+    ///
     /// # Returns
     ///
     /// A `Result<Vec<Resource>>` containing descriptions of available resources if successful
+    #[tracing::instrument(skip(self), fields(client_name = %self.name))]
     pub async fn list_resources(&self) -> Result<Vec<Resource>> {
+        tracing::debug!("Listing resources via transport");
         let resources_json = self.transport.list_resources().await?;
+        tracing::trace!(raw_resources = ?resources_json, "Received raw resources list");
 
         let mut resources = Vec::new();
         for resource_value in resources_json {
-            if let Ok(resource) = serde_json::from_value(resource_value) {
-                resources.push(resource);
+            match serde_json::from_value::<Resource>(resource_value.clone()) {
+                Ok(resource) => {
+                    tracing::trace!(resource_uri = %resource.uri, "Successfully deserialized resource");
+                    resources.push(resource);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, value = ?resource_value, "Failed to deserialize resource from value");
+                }
             }
         }
-
+        tracing::debug!(
+            num_resources = resources.len(),
+            "Finished listing resources"
+        );
         Ok(resources)
     }
 
@@ -280,6 +322,7 @@ impl McpClient {
     ///
     /// This method provides a strongly-typed interface for resource retrieval,
     /// where the expected resource type is specified as a generic parameter.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Type Parameters
     ///
@@ -298,14 +341,19 @@ impl McpClient {
     /// Returns an error if:
     /// * The resource retrieval fails
     /// * The result cannot be deserialized to type R
+    #[tracing::instrument(skip(self), fields(client_name = %self.name, resource_uri = %uri))]
     pub async fn get_resource<R>(&self, uri: &str) -> Result<R>
     where
         R: for<'de> Deserialize<'de>,
     {
+        tracing::debug!("Getting resource via transport");
         let resource_value = self.transport.get_resource(uri).await?;
+        tracing::trace!(raw_resource = ?resource_value, "Received raw resource value");
 
-        serde_json::from_value(resource_value)
-            .map_err(|e| Error::Serialization(format!("Failed to deserialize resource: {}", e)))
+        serde_json::from_value(resource_value.clone()).map_err(|e| {
+            tracing::error!(error = %e, value = ?resource_value, "Failed to deserialize resource");
+            Error::Serialization(format!("Failed to deserialize resource: {}", e))
+        })
     }
 
     /// Closes the client connection.
@@ -313,11 +361,16 @@ impl McpClient {
     /// This is a placeholder method since the transport is behind an Arc and can't actually
     /// be closed by the client directly. Users should drop all references to the client
     /// to properly clean up resources.
+    /// This method is instrumented with `tracing`.
     ///
     /// # Returns
     ///
     /// A `Result<()>` that is always Ok
+    #[tracing::instrument(skip(self), fields(client_name = %self.name))]
     pub async fn close(&self) -> Result<()> {
+        tracing::info!(
+            "Close called on McpClient (Note: Transport closure depends on Arc references)"
+        );
         Ok(())
     }
 }

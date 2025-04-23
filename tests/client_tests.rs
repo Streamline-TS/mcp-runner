@@ -69,7 +69,7 @@ async fn test_list_tools() -> Result<()> {
 #[tokio::test]
 async fn test_call_tool() -> Result<()> {
     // Define test input and expected output
-    #[derive(Serialize)]
+    #[derive(Serialize, Debug)] // Add Debug derive
     struct TestInput {
         message: String,
     }
@@ -219,6 +219,7 @@ async fn test_serialization_error() -> Result<()> {
     use std::collections::HashMap;
 
     // Create a type that will fail to serialize
+    #[derive(Debug)] // Add Debug derive
     struct Unserializable;
 
     impl Serialize for Unserializable {

@@ -3,6 +3,7 @@ use crate::server::{ServerId, ServerStatus};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tracing; // Import tracing
 
 /// Server lifecycle event types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,9 @@ impl ServerLifecycleManager {
     }
 
     /// Record a server event
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_id = %id, server_name = %name, event_type = ?event))]
     pub fn record_event(
         &self,
         id: ServerId,
@@ -57,6 +61,7 @@ impl ServerLifecycleManager {
         event: ServerLifecycleEvent,
         details: Option<String>,
     ) -> Result<()> {
+        tracing::info!(details = ?details, "Recording server lifecycle event");
         let server_event = ServerEvent {
             id,
             name,
@@ -67,10 +72,10 @@ impl ServerLifecycleManager {
 
         // Update status
         {
-            let mut statuses = self
-                .statuses
-                .lock()
-                .map_err(|_| Error::Other("Failed to lock server statuses".to_string()))?;
+            let mut statuses = self.statuses.lock().map_err(|_| {
+                tracing::error!("Failed to lock server statuses");
+                Error::Other("Failed to lock server statuses".to_string())
+            })?;
 
             let status = match event {
                 ServerLifecycleEvent::Started => ServerStatus::Running,
@@ -79,24 +84,28 @@ impl ServerLifecycleManager {
                 ServerLifecycleEvent::Restarted => ServerStatus::Running,
             };
 
+            tracing::debug!(new_status = ?status, "Updating server status");
             statuses.insert(id, status);
         }
 
         // Record event
         {
-            let mut events = self
-                .events
-                .lock()
-                .map_err(|_| Error::Other("Failed to lock server events".to_string()))?;
+            let mut events = self.events.lock().map_err(|_| {
+                tracing::error!("Failed to lock server events");
+                Error::Other("Failed to lock server events".to_string())
+            })?;
 
             events.push(server_event);
+            tracing::debug!(total_events = events.len(), "Added event to history");
 
             // Limit event history
             if events.len() > 1000 {
+                tracing::trace!("Trimming event history (exceeded 1000 events)");
                 events.remove(0);
             }
         }
 
+        tracing::info!("Successfully recorded server event");
         Ok(())
     }
 

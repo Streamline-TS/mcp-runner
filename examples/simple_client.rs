@@ -1,9 +1,21 @@
 use mcp_runner::McpRunner;
 use mcp_runner::error::Result;
 use serde_json::json;
+use tracing_subscriber::{EnvFilter, fmt}; // Import tracing subscriber components
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize tracing subscriber
+    // This configures how logs are collected and formatted.
+    // `with_env_filter` reads the RUST_LOG environment variable to set the log level.
+    // `with_target(true)` includes the module path in the log output.
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(true) // Show module targets
+        .init();
+
+    tracing::info!("Starting simple_client example");
+
     // Create a runner from a config file
     let config_path = "examples/config.json";
     let mut runner = McpRunner::from_config_file(config_path)?;
@@ -109,5 +121,6 @@ async fn main() -> Result<()> {
         println!("Warning: Failed to stop filesystem server: {}", e);
     }
 
+    tracing::info!("simple_client example finished");
     Ok(())
 }
