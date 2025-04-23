@@ -1,3 +1,69 @@
+/*!
+ # MCP Runner
+
+ A Rust library for running and interacting with Model Context Protocol (MCP) servers.
+
+ ## Overview
+ 
+ MCP Runner provides functionality to:
+ - Start and manage MCP server processes
+ - Communicate with MCP servers using JSON-RPC
+ - Configure MCP servers through config files
+ - List and call tools provided by MCP servers
+ - Access resources exposed by MCP servers
+
+ ## Basic Usage
+
+ ```no_run
+ use mcp_runner::{McpRunner, Result};
+ use serde_json::{json, Value};
+ 
+ #[tokio::main]
+ async fn main() -> Result<()> {
+     // Create a runner from config file
+     let mut runner = McpRunner::from_config_file("config.json")?;
+     
+     // Start all configured servers
+     let server_ids = runner.start_all_servers().await?;
+     
+     // Or start a specific server
+     let server_id = runner.start_server("fetch").await?;
+     
+     // Get a client to interact with the server
+     let client = runner.get_client(server_id)?;
+     
+     // Initialize the client
+     client.initialize().await?;
+     
+     // List available tools
+     let tools = client.list_tools().await?;
+     println!("Available tools: {:?}", tools);
+     
+     // Call a tool
+     let args = json!({
+         "url": "https://modelcontextprotocol.io"
+     });
+     let result: Value = client.call_tool("fetch", &args).await?;
+     
+     println!("Result: {:?}", result);
+     
+     Ok(())
+ }
+ ```
+
+ ## Features
+ 
+ - **Server Management**: Start, stop, and monitor MCP servers
+ - **JSON-RPC Communication**: Communicate with MCP servers using JSON-RPC
+ - **Configuration**: Configure servers through JSON config files
+ - **Error Handling**: Comprehensive error handling
+ - **Async Support**: Full async/await support
+
+ ## License
+
+ This project is licensed under the terms in the LICENSE file.
+*/
+
 pub mod config;
 pub mod server;
 pub mod transport;

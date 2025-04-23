@@ -5,13 +5,32 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::io::{self};
 
-// Mock for stdin/stdout to avoid actual process I/O
+/// MockStdio simulates stdin/stdout interactions for testing without actual process I/O.
+/// 
+/// This struct allows tests to provide predefined responses and capture sent messages,
+/// making it possible to test the StdioTransport implementation without spawning actual
+/// processes.
+/// 
+/// # Fields
+/// 
+/// * `recv_buffer` - A buffer of mock responses to return when reading
+/// * `sent_messages` - A record of messages sent to this mock
 struct MockStdio {
     recv_buffer: Vec<String>,
     sent_messages: Vec<String>,
 }
 
 impl MockStdio {
+    /// Creates a new MockStdio with a predefined set of responses.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `recv_buffer` - A vector of strings that will be returned in reverse order
+    ///                    when `read_line` is called.
+    /// 
+    /// # Returns
+    /// 
+    /// A new `MockStdio` instance
     fn new(recv_buffer: Vec<String>) -> Self {
         Self {
             recv_buffer,
@@ -19,6 +38,14 @@ impl MockStdio {
         }
     }
 
+    /// Simulates reading a line from stdout.
+    /// 
+    /// This method pops a string from the recv_buffer and returns it,
+    /// or returns an IO error if the buffer is empty.
+    /// 
+    /// # Returns
+    /// 
+    /// An `io::Result<String>` containing either the next mock response or an error
     fn read_line(&mut self) -> io::Result<String> {
         if let Some(line) = self.recv_buffer.pop() {
             Ok(line)
@@ -27,17 +54,62 @@ impl MockStdio {
         }
     }
 
+    /// Simulates writing a line to stdin.
+    /// 
+    /// This method records the provided line in the sent_messages vector
+    /// for later inspection.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `line` - The line to record as being written
+    /// 
+    /// # Returns
+    /// 
+    /// An `io::Result<()>` that is always Ok in this mock implementation
     fn write_line(&mut self, line: &str) -> io::Result<()> {
         self.sent_messages.push(line.to_string());
         Ok(())
     }
 
+    /// Gets the messages that have been "sent" to this mock.
+    /// 
+    /// # Returns
+    /// 
+    /// A vector of strings that were passed to `write_line`
     fn get_sent_messages(&self) -> Vec<String> {
         self.sent_messages.clone()
     }
 }
 
-// Create a testable version of StdioTransport
+/// TestableStdioTransport is a test implementation of the Transport trait.
+/// 
+/// This struct wraps a MockStdio to provide a testable implementation of the 
+/// Transport trait that can be used in unit tests without requiring actual process I/O.
+/// It allows tests to verify that correct JSON-RPC requests are sent and to provide
+/// mock responses.
+/// 
+/// # Example
+/// 
+/// ```no_run
+/// #[tokio::test]
+/// async fn test_list_tools() {
+///     // Create mock responses
+///     let mock_responses = vec![
+///         r#"{"jsonrpc":"2.0","id":"1","result":{"tools":[]}}"#.to_string(),
+///     ];
+///     
+///     // Create transport with mocks
+///     let transport = TestableStdioTransport::new(mock_responses);
+///     
+///     // Call the method and verify results
+///     let tools = transport.list_tools().await.unwrap();
+///     assert_eq!(tools.len(), 0);
+///     
+///     // Verify the request format
+///     let sent = transport.get_sent_messages();
+///     // Assert on sent messages...
+/// }
+/// ```
 struct TestableStdioTransport {
     mock_stdio: Arc<Mutex<MockStdio>>,
 }
