@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::transport::StdioTransport;
+use crate::transport::Transport;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -38,12 +38,12 @@ pub struct McpClient {
     /// Server name
     name: String,
     /// Transport
-    transport: Arc<StdioTransport>,
+    transport: Arc<dyn Transport>,
 }
 
 impl McpClient {
     /// Create a new MCP client
-    pub fn new(name: String, transport: StdioTransport) -> Self {
+    pub fn new(name: String, transport: impl Transport + 'static) -> Self {
         Self {
             name,
             transport: Arc::new(transport),

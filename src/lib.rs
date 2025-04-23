@@ -4,13 +4,15 @@ pub mod transport;
 pub mod error;
 pub mod client;
 
-use config::Config;
-use error::{Error, Result};
-use server::{ServerId, ServerProcess, ServerStatus};
+// Re-export key types for better API ergonomics
+pub use config::Config;
+pub use error::{Error, Result};
+pub use server::{ServerId, ServerProcess, ServerStatus};
+pub use client::McpClient;
+
 use std::collections::HashMap;
 use std::path::Path;
 use transport::StdioTransport;
-use client::McpClient;
 
 /// Configure and run MCP servers
 pub struct McpRunner {

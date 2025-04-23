@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::transport::Transport;
 use super::json_rpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use async_process::{ChildStdin, ChildStdout};
 use serde_json::Value;
@@ -8,6 +9,7 @@ use tokio::task::JoinHandle;
 use std::collections::HashMap;
 use uuid::Uuid;
 use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
+use async_trait::async_trait;
 
 /// A transport for communicating with an MCP server via STDIO
 pub struct StdioTransport {
@@ -258,5 +260,28 @@ impl StdioTransport {
         }
         
         Ok(())
+    }
+}
+
+#[async_trait]
+impl Transport for StdioTransport {
+    async fn initialize(&self) -> Result<()> {
+        self.initialize().await
+    }
+    
+    async fn list_tools(&self) -> Result<Vec<Value>> {
+        self.list_tools().await
+    }
+    
+    async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
+        self.call_tool(name.to_string(), args).await
+    }
+    
+    async fn list_resources(&self) -> Result<Vec<Value>> {
+        self.list_resources().await
+    }
+    
+    async fn get_resource(&self, uri: &str) -> Result<Value> {
+        self.get_resource(uri.to_string()).await
     }
 }
