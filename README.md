@@ -77,11 +77,8 @@ MCP Runner uses JSON configuration files to define MCP servers. Here's an exampl
 {
   "mcpServers": {
     "fetch": {
-      "command": "node",
-      "args": ["mcp-fetch-server.js"],
-      "env": {
-        "DEBUG": "true"
-      }
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
     },
     "filesystem": {
       "command": "npx",
@@ -99,13 +96,11 @@ use std::collections::HashMap;
 
 // Create config programmatically
 let mut servers = HashMap::new();
-let mut env = HashMap::new();
-env.insert("DEBUG".to_string(), "true".to_string());
 
 let server_config = ServerConfig {
-    command: "node".to_string(),
-    args: vec!["mcp-fetch-server.js".to_string()],
-    env,
+    command: "uvx".to_string(),
+    args: vec!["mcp-server-fetch".to_string()],
+    env: HashMap::new(),
 };
 
 servers.insert("fetch".to_string(), server_config);
