@@ -29,7 +29,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     /// Indicates an underlying IO error occurred.
-    /// 
+    ///
     /// This typically happens when:
     /// - Reading from or writing to files
     /// - Reading from or writing to process stdin/stdout
@@ -38,7 +38,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     /// Failed to parse configuration from a file or string.
-    /// 
+    ///
     /// This error occurs when:
     /// - The configuration JSON is malformed
     /// - Required fields are missing

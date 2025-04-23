@@ -2,7 +2,8 @@
 use crate::config::ServerConfig;
 use crate::error::{Error, Result};
 use async_process::{Child, Command, Stdio};
-use uuid::Uuid;
+use std::fmt;
+use uuid::Uuid; // Import fmt
 
 /// Unique identifier for a server process
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -13,10 +14,12 @@ impl ServerId {
     pub(crate) fn new() -> Self {
         Self(Uuid::new_v4())
     }
-    
-    // Public method for string representation if needed
-    pub fn to_string(&self) -> String {
-        self.0.to_string()
+}
+
+// Implement Display trait
+impl fmt::Display for ServerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -86,7 +89,7 @@ impl ServerProcess {
 
         let mut command = Command::new(&self.config.command);
         command.args(&self.config.args);
-        
+
         // Set environment variables
         for (key, value) in &self.config.env {
             command.env(key, value);
@@ -113,15 +116,15 @@ impl ServerProcess {
     pub async fn stop(&mut self) -> Result<()> {
         if let Some(mut child) = self.child.take() {
             self.status = ServerStatus::Stopping;
-            
+
             // Try to kill the process gracefully
             if let Err(e) = child.kill() {
                 return Err(Error::Process(format!("Failed to kill process: {}", e)));
             }
-            
+
             // Wait for the process to exit
             let _ = child.status().await;
-            
+
             self.status = ServerStatus::Stopped;
             Ok(())
         } else {
@@ -132,9 +135,9 @@ impl ServerProcess {
     /// Take the stdin pipe from the process
     pub fn take_stdin(&mut self) -> Result<async_process::ChildStdin> {
         if let Some(child) = &mut self.child {
-            child.stdin.take().ok_or_else(|| 
+            child.stdin.take().ok_or_else(|| {
                 Error::Process("Failed to get stdin pipe from child process".to_string())
-            )
+            })
         } else {
             Err(Error::NotRunning)
         }
@@ -143,9 +146,9 @@ impl ServerProcess {
     /// Take the stdout pipe from the process
     pub fn take_stdout(&mut self) -> Result<async_process::ChildStdout> {
         if let Some(child) = &mut self.child {
-            child.stdout.take().ok_or_else(|| 
+            child.stdout.take().ok_or_else(|| {
                 Error::Process("Failed to get stdout pipe from child process".to_string())
-            )
+            })
         } else {
             Err(Error::NotRunning)
         }
@@ -154,9 +157,9 @@ impl ServerProcess {
     /// Take the stderr pipe from the process
     pub fn take_stderr(&mut self) -> Result<async_process::ChildStderr> {
         if let Some(child) = &mut self.child {
-            child.stderr.take().ok_or_else(|| 
+            child.stderr.take().ok_or_else(|| {
                 Error::Process("Failed to get stderr pipe from child process".to_string())
-            )
+            })
         } else {
             Err(Error::NotRunning)
         }

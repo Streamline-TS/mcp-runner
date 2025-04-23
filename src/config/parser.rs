@@ -16,7 +16,7 @@ use std::path::Path;
 /// ```
 /// use mcp_runner::config::ServerConfig;
 /// use std::collections::HashMap;
-/// 
+///
 /// let server_config = ServerConfig {
 ///     command: "node".to_string(),
 ///     args: vec!["server.js".to_string()],
@@ -29,11 +29,11 @@ use std::path::Path;
 /// ```
 /// use mcp_runner::config::ServerConfig;
 /// use std::collections::HashMap;
-/// 
+///
 /// let mut env = HashMap::new();
 /// env.insert("MODEL_PATH".to_string(), "/path/to/model".to_string());
 /// env.insert("DEBUG".to_string(), "true".to_string());
-/// 
+///
 /// let server_config = ServerConfig {
 ///     command: "python".to_string(),
 ///     args: vec!["-m".to_string(), "mcp_server".to_string()],
@@ -45,10 +45,10 @@ pub struct ServerConfig {
     /// Command to execute when starting the MCP server.
     /// This can be an absolute path or a command available in the PATH.
     pub command: String,
-    
+
     /// Command-line arguments to pass to the server.
     pub args: Vec<String>,
-    
+
     /// Environment variables to set when launching the server.
     /// These will be combined with the current environment.
     #[serde(default)]
@@ -107,7 +107,7 @@ pub struct ServerConfig {
 /// #     env: HashMap::new(),
 /// # });
 /// # let config = Config { mcp_servers: servers };
-/// 
+///
 /// if let Some(server_config) = config.mcp_servers.get("gpt4") {
 ///     println!("Command: {}", server_config.command);
 /// }
@@ -143,8 +143,8 @@ impl Config {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| Error::ConfigParse(format!("Failed to read config file: {}", e)))?;
-        
-        Self::from_str(&content)
+
+        Self::parse_from_str(&content)
     }
 
     /// Parses a configuration from a JSON string.
@@ -162,7 +162,7 @@ impl Config {
     /// Returns an error if:
     /// * The string is not valid JSON
     /// * The JSON does not conform to the expected schema
-    pub fn from_str(content: &str) -> Result<Self> {
+    pub fn parse_from_str(content: &str) -> Result<Self> {
         serde_json::from_str(content)
             .map_err(|e| Error::ConfigParse(format!("Failed to parse JSON config: {}", e)))
     }
@@ -171,7 +171,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_claude_config() {
         let config_str = r#"{
@@ -182,14 +182,21 @@ mod tests {
                 }
             }
         }"#;
-        
-        let config = Config::from_str(config_str).unwrap();
-        
+
+        let config = Config::parse_from_str(config_str).unwrap();
+
         assert_eq!(config.mcp_servers.len(), 1);
         assert!(config.mcp_servers.contains_key("filesystem"));
-        
+
         let fs_config = &config.mcp_servers["filesystem"];
         assert_eq!(fs_config.command, "npx");
-        assert_eq!(fs_config.args, vec!["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]);
+        assert_eq!(
+            fs_config.args,
+            vec![
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/path/to/allowed/files"
+            ]
+        );
     }
 }

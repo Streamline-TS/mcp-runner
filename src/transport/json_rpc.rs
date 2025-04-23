@@ -41,12 +41,12 @@ impl JsonRpcRequest {
             params,
         }
     }
-    
+
     /// Create a request to list MCP tools
     pub fn list_tools(id: impl Into<Value>) -> Self {
         Self::new(id, "tools/list", None)
     }
-    
+
     /// Create a request to call an MCP tool
     pub fn call_tool(id: impl Into<Value>, name: impl Into<String>, args: Value) -> Self {
         let params = serde_json::json!({
@@ -55,12 +55,12 @@ impl JsonRpcRequest {
         });
         Self::new(id, "tools/call", Some(params))
     }
-    
+
     /// Create a request to list MCP resources
     pub fn list_resources(id: impl Into<Value>) -> Self {
         Self::new(id, "resources/list", None)
     }
-    
+
     /// Create a request to get an MCP resource
     pub fn get_resource(id: impl Into<Value>, uri: impl Into<String>) -> Self {
         let params = serde_json::json!({
@@ -91,7 +91,7 @@ impl JsonRpcNotification {
             params,
         }
     }
-    
+
     /// Create an 'initialized' notification
     pub fn initialized() -> Self {
         Self::new("notifications/initialized", None)
@@ -141,9 +141,14 @@ impl JsonRpcResponse {
             error: None,
         }
     }
-    
+
     /// Create a new error JSON-RPC response
-    pub fn error(id: impl Into<Value>, code: i32, message: impl Into<String>, data: Option<Value>) -> Self {
+    pub fn error(
+        id: impl Into<Value>,
+        code: i32,
+        message: impl Into<String>,
+        data: Option<Value>,
+    ) -> Self {
         Self {
             jsonrpc: JSON_RPC_VERSION.to_string(),
             id: id.into(),
@@ -155,7 +160,7 @@ impl JsonRpcResponse {
             }),
         }
     }
-    
+
     /// Check if the response is successful
     pub fn is_success(&self) -> bool {
         self.error.is_none() && self.result.is_some()

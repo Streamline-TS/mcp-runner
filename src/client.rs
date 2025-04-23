@@ -11,7 +11,7 @@
 /// `Transport` trait, though the library primarily focuses on StdioTransport.
 use crate::error::{Error, Result};
 use crate::transport::Transport;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -110,17 +110,17 @@ pub struct Resource {
 /// use mcp_runner::{McpClient, transport::StdioTransport, error::Result};
 /// use serde_json::{json, Value};
 /// use async_process::{ChildStdin, ChildStdout};
-/// 
+///
 /// # // Mock implementation for the example
 /// # fn get_mock_stdin_stdout() -> (ChildStdin, ChildStdout) {
 /// #     unimplemented!("This is just for doctest and won't be called")
 /// # }
-/// 
+///
 /// # async fn example() -> Result<()> {
 /// # // In a real app, you would get these from a server process
 /// # // Here we just declare them but don't initialize to make the doctest pass
 /// # let (stdin, stdout) = get_mock_stdin_stdout();
-/// 
+///
 /// // Create a transport
 /// let transport = StdioTransport::new("fetch-server".to_string(), stdin, stdout);
 ///
@@ -175,7 +175,7 @@ impl McpClient {
             transport: Arc::new(transport),
         }
     }
-    
+
     /// Gets the name of the client (usually the same as the server name).
     ///
     /// # Returns
@@ -184,7 +184,7 @@ impl McpClient {
     pub fn name(&self) -> &str {
         &self.name
     }
-    
+
     /// Initializes the connection to the MCP server.
     ///
     /// This method should be called before any other methods to ensure
@@ -196,7 +196,7 @@ impl McpClient {
     pub async fn initialize(&self) -> Result<()> {
         self.transport.initialize().await
     }
-    
+
     /// Lists all available tools provided by the MCP server.
     ///
     /// # Returns
@@ -204,17 +204,17 @@ impl McpClient {
     /// A `Result<Vec<Tool>>` containing descriptions of available tools if successful
     pub async fn list_tools(&self) -> Result<Vec<Tool>> {
         let tools_json = self.transport.list_tools().await?;
-        
+
         let mut tools = Vec::new();
         for tool_value in tools_json {
             if let Ok(tool) = serde_json::from_value(tool_value) {
                 tools.push(tool);
             }
         }
-        
+
         Ok(tools)
     }
-    
+
     /// Calls a tool on the MCP server with the given arguments.
     ///
     /// This method provides a strongly-typed interface for tool calls,
@@ -246,17 +246,18 @@ impl McpClient {
         R: for<'de> Deserialize<'de>,
     {
         // Serialize args to a Value
-        let args_value = serde_json::to_value(args)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize tool arguments: {}", e)))?;
-        
+        let args_value = serde_json::to_value(args).map_err(|e| {
+            Error::Serialization(format!("Failed to serialize tool arguments: {}", e))
+        })?;
+
         // Call the tool
         let result_value = self.transport.call_tool(name, args_value).await?;
-        
+
         // Deserialize the result
         serde_json::from_value(result_value)
             .map_err(|e| Error::Serialization(format!("Failed to deserialize tool result: {}", e)))
     }
-    
+
     /// Lists all available resources provided by the MCP server.
     ///
     /// # Returns
@@ -264,17 +265,17 @@ impl McpClient {
     /// A `Result<Vec<Resource>>` containing descriptions of available resources if successful
     pub async fn list_resources(&self) -> Result<Vec<Resource>> {
         let resources_json = self.transport.list_resources().await?;
-        
+
         let mut resources = Vec::new();
         for resource_value in resources_json {
             if let Ok(resource) = serde_json::from_value(resource_value) {
                 resources.push(resource);
             }
         }
-        
+
         Ok(resources)
     }
-    
+
     /// Gets a specific resource from the MCP server.
     ///
     /// This method provides a strongly-typed interface for resource retrieval,
@@ -302,11 +303,11 @@ impl McpClient {
         R: for<'de> Deserialize<'de>,
     {
         let resource_value = self.transport.get_resource(uri).await?;
-        
+
         serde_json::from_value(resource_value)
             .map_err(|e| Error::Serialization(format!("Failed to deserialize resource: {}", e)))
     }
-    
+
     /// Closes the client connection.
     ///
     /// This is a placeholder method since the transport is behind an Arc and can't actually

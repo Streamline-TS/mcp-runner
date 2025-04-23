@@ -27,7 +27,7 @@
 ///     args: vec!["-m".to_string(), "mcp_server".to_string()],
 ///     env: HashMap::new(),
 /// };
-/// 
+///
 /// servers.insert("gpt4".to_string(), gpt4_config);
 /// let config = Config { mcp_servers: servers };
 /// ```

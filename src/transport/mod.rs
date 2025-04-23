@@ -1,27 +1,27 @@
-mod stdio;
 mod json_rpc;
+mod stdio;
 
-pub use stdio::StdioTransport;
-pub use json_rpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
-use async_trait::async_trait;
-use serde_json::Value;
 use crate::error::Result;
+use async_trait::async_trait;
+pub use json_rpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
+use serde_json::Value;
+pub use stdio::StdioTransport;
 
 /// Transport is the core trait for communication with MCP servers.
-/// 
-/// This trait defines the interface for interacting with Model Context Protocol (MCP) 
+///
+/// This trait defines the interface for interacting with Model Context Protocol (MCP)
 /// servers through various transport mechanisms. Implementations of this trait handle
 /// the low-level communication details, allowing clients to focus on high-level interactions.
-/// 
+///
 /// # Examples
-/// 
+///
 /// Using a transport to list available tools:
-/// 
+///
 /// ```no_run
 /// use mcp_runner::transport::Transport;
 /// use mcp_runner::error::Result;
 /// use serde_json::Value;
-/// 
+///
 /// async fn example<T: Transport>(transport: &T) -> Result<()> {
 ///     // Initialize the transport
 ///     transport.initialize().await?;
@@ -46,7 +46,7 @@ pub trait Transport: Send + Sync {
     /// - `Ok(())` if initialization was successful
     /// - `Err(Error)` if initialization failed
     async fn initialize(&self) -> Result<()>;
-    
+
     /// Lists all available tools provided by the MCP server.
     ///
     /// # Returns
@@ -62,7 +62,7 @@ pub trait Transport: Send + Sync {
     /// - `description`: A human-readable description of the tool
     /// - Additional fields as specified by the MCP server
     async fn list_tools(&self) -> Result<Vec<Value>>;
-    
+
     /// Calls a specific tool on the MCP server with the provided arguments.
     ///
     /// # Arguments
@@ -76,7 +76,7 @@ pub trait Transport: Send + Sync {
     /// - `Ok(Value)` containing the tool's response if successful
     /// - `Err(Error)` if the tool call failed
     async fn call_tool(&self, name: &str, args: Value) -> Result<Value>;
-    
+
     /// Lists all available resources provided by the MCP server.
     ///
     /// Resources can include model metadata, usage information, or other
@@ -88,7 +88,7 @@ pub trait Transport: Send + Sync {
     /// - `Ok(Vec<Value>)` containing a list of resource definitions if successful
     /// - `Err(Error)` if the request failed
     async fn list_resources(&self) -> Result<Vec<Value>>;
-    
+
     /// Retrieves a specific resource from the MCP server.
     ///
     /// # Arguments
