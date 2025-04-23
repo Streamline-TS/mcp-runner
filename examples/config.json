@@ -1,14 +1,17 @@
 
 {
-    "mcpServers": {
-      "shell": {
-        "command": "uvx",
-        "args": [
-          "mcp-shell-server"
-        ],
-        "env": {
-          "ALLOW_COMMANDS": "ls,cat,pwd,grep,find,ps,lsusb,lspci,lsblk,df"
-        }
-      }
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/tmp"
+      ]
     }
+  }
 }
