@@ -17,7 +17,7 @@
 ///
 /// Creating a configuration programmatically:
 /// ```
-/// use mcp_runner::config::{Config, ServerConfig};
+/// use mcp_runner::{McpRunner, config::{Config, ServerConfig}};
 /// use std::collections::HashMap;
 ///
 /// let mut servers = HashMap::new();

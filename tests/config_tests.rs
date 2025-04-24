@@ -84,7 +84,7 @@ fn test_validate_config() -> Result<()> {
     config_map.insert("github".to_string(), gh_config);
 
     // Import the validator
-    use mcp_runner::config::validator::validate_config;
+    use mcp_runner::config::validate_config;
 
     // Validate the config
     validate_config(&config_map)?;
@@ -101,6 +101,36 @@ fn test_validate_config() -> Result<()> {
 
     // This should fail
     assert!(validate_config(&invalid_config).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_parse_claude_config() -> Result<()> {
+    let config_str = r#"{
+        "mcpServers": {
+            "filesystem": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
+            }
+        }
+    }"#;
+
+    let config = Config::parse_from_str(config_str)?;
+
+    assert_eq!(config.mcp_servers.len(), 1);
+    assert!(config.mcp_servers.contains_key("filesystem"));
+
+    let fs_config = &config.mcp_servers["filesystem"];
+    assert_eq!(fs_config.command, "npx");
+    assert_eq!(
+        fs_config.args,
+        vec![
+            "-y",
+            "@modelcontextprotocol/server-filesystem",
+            "/path/to/allowed/files"
+        ]
+    );
 
     Ok(())
 }

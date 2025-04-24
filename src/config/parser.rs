@@ -167,36 +167,3 @@ impl Config {
             .map_err(|e| Error::ConfigParse(format!("Failed to parse JSON config: {}", e)))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_claude_config() {
-        let config_str = r#"{
-            "mcpServers": {
-                "filesystem": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
-                }
-            }
-        }"#;
-
-        let config = Config::parse_from_str(config_str).unwrap();
-
-        assert_eq!(config.mcp_servers.len(), 1);
-        assert!(config.mcp_servers.contains_key("filesystem"));
-
-        let fs_config = &config.mcp_servers["filesystem"];
-        assert_eq!(fs_config.command, "npx");
-        assert_eq!(
-            fs_config.args,
-            vec![
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "/path/to/allowed/files"
-            ]
-        );
-    }
-}
