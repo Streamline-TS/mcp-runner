@@ -1,7 +1,7 @@
 use mcp_runner::McpRunner;
 use mcp_runner::error::Result;
 use serde_json::json;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[tokio::main]
