@@ -16,20 +16,21 @@
 /// ```
 ///
 /// Creating a configuration programmatically:
-///
 /// ```
 /// use mcp_runner::config::{Config, ServerConfig};
 /// use std::collections::HashMap;
 ///
 /// let mut servers = HashMap::new();
-/// let gpt4_config = ServerConfig {
-///     command: "python".to_string(),
-///     args: vec!["-m".to_string(), "mcp_server".to_string()],
+///
+/// let server_config = ServerConfig {
+///     command: "uvx".to_string(),
+///     args: vec!["mcp-server-fetch".to_string()],
 ///     env: HashMap::new(),
 /// };
 ///
-/// servers.insert("gpt4".to_string(), gpt4_config);
+/// servers.insert("fetch".to_string(), server_config);
 /// let config = Config { mcp_servers: servers };
+/// let runner = McpRunner::new(config);
 /// ```
 mod parser;
 pub mod validator;

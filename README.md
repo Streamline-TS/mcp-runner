@@ -4,7 +4,6 @@ A Rust library for running and interacting with Model Context Protocol (MCP) ser
 
 [![Crates.io](https://img.shields.io/crates/v/mcp-runner.svg)](https://crates.io/crates/mcp-runner)
 [![Documentation](https://docs.rs/mcp-runner/badge.svg)](https://docs.rs/mcp-runner)
-[![License](https://img.shields.io/crates/l/mcp-runner.svg)](LICENSE)
 
 ## Overview
 
@@ -33,24 +32,14 @@ Here's a simple example of using MCP Runner to start a server and call a tool:
 use mcp_runner::{McpRunner, error::Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tracing_subscriber::{fmt, EnvFilter}; // Import tracing subscriber
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing subscriber (optional, for logging)
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_target(true)
-        .init();
-
-    tracing::info!("Starting MCP Runner Quick Start example");
-
     // Create runner from config file
     let mut runner = McpRunner::from_config_file("config.json")?;
     
     // Start server
     let server_id = runner.start_server("fetch").await?;
-    tracing::info!(server_id = %server_id, "Server started");
     
     // Get client for interacting with the server
     let client = runner.get_client(server_id)?;
@@ -60,7 +49,6 @@ async fn main() -> Result<()> {
     
     // List available tools
     let tools = client.list_tools().await?;
-    tracing::debug!(?tools, "Available tools");
     println!("Available tools:");
     for tool in tools {
         println!("  - {}: {}", tool.name, tool.description);
@@ -70,12 +58,10 @@ async fn main() -> Result<()> {
     let fetch_result = client.call_tool("fetch", &json!({
         "url": "https://modelcontextprotocol.io"
     })).await?;
-    tracing::info!(?fetch_result, "Fetch result");
     println!("Fetch result: {}", fetch_result);
     
     // Stop the server when done
     runner.stop_server(server_id).await?;
-    tracing::info!("Server stopped");
     
     Ok(())
 }
@@ -83,7 +69,7 @@ async fn main() -> Result<()> {
 
 ## Observability
 
-This library uses the `tracing` crate for logging and diagnostics. To enable logging, ensure you have a `tracing_subscriber` configured in your application (as shown in the Quick Start example) and set the `RUST_LOG` environment variable. For example:
+This library uses the `tracing` crate for logging and diagnostics. To enable logging, ensure you have a `tracing_subscriber` configured in your application and set the `RUST_LOG` environment variable. For example:
 
 ```bash
 # Show info level logs for all crates
@@ -181,7 +167,11 @@ match result {
 Check the `examples/` directory for more usage examples:
 
 - `simple_client.rs`: Basic usage of the client API
-- More examples to come!
+  ```bash
+  # Run with info level logging
+  RUST_LOG=info cargo run --example simple_client
+  ```  
+- more to come
 
 ## Contributing
 
