@@ -81,7 +81,7 @@ RUST_LOG=mcp_runner=trace cargo run --example simple_client
 
 ## Configuration
 
-MCP Runner uses JSON configuration files to define MCP servers. Here's an example:
+MCP Runner uses JSON configuration to define MCP servers. Example:
 
 ```json
 {
@@ -98,13 +98,38 @@ MCP Runner uses JSON configuration files to define MCP servers. Here's an exampl
 }
 ```
 
-You can load configurations from files or construct them programmatically:
+You can load configurations in three different ways:
+
+### 1. Load from a file
 
 ```rust
-use mcp_runner::config::{Config, ServerConfig};
+use mcp_runner::McpRunner;
+
+let runner = McpRunner::from_config_file("config.json")?;
+```
+
+### 2. Load from a JSON string
+
+```rust
+use mcp_runner::McpRunner;
+
+let config_json = r#"{
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  }
+}"#;
+let runner = McpRunner::from_config_str(config_json)?;
+```
+
+### 3. Create programmatically
+
+```rust
+use mcp_runner::{McpRunner, config::{Config, ServerConfig}};
 use std::collections::HashMap;
 
-// Create config programmatically
 let mut servers = HashMap::new();
 
 let server_config = ServerConfig {

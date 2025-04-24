@@ -98,17 +98,17 @@ pub struct ServerConfig {
 ///
 /// ```
 /// use mcp_runner::config::{Config, ServerConfig};
-/// use std::collections::HashMap;
-///
+/// # use std::collections::HashMap;
 /// # let mut servers = HashMap::new();
-/// # servers.insert("gpt4".to_string(), ServerConfig {
-/// #     command: "python".to_string(),
-/// #     args: vec![],
-/// #     env: HashMap::new(),
-/// # });
+/// # let server_config = ServerConfig {
+/// #    command: "uvx".to_string(),
+/// #    args: vec!["mcp-server-fetch".to_string()],
+/// #    env: HashMap::new(),
+/// # };
+/// # servers.insert("fetch".to_string(), server_config);
 /// # let config = Config { mcp_servers: servers };
 ///
-/// if let Some(server_config) = config.mcp_servers.get("gpt4") {
+/// if let Some(server_config) = config.mcp_servers.get("fetch") {
 ///     println!("Command: {}", server_config.command);
 /// }
 /// ```
@@ -165,5 +165,38 @@ impl Config {
     pub fn parse_from_str(content: &str) -> Result<Self> {
         serde_json::from_str(content)
             .map_err(|e| Error::ConfigParse(format!("Failed to parse JSON config: {}", e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_claude_config() {
+        let config_str = r#"{
+            "mcpServers": {
+                "filesystem": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
+                }
+            }
+        }"#;
+
+        let config = Config::parse_from_str(config_str).unwrap();
+
+        assert_eq!(config.mcp_servers.len(), 1);
+        assert!(config.mcp_servers.contains_key("filesystem"));
+
+        let fs_config = &config.mcp_servers["filesystem"];
+        assert_eq!(fs_config.command, "npx");
+        assert_eq!(
+            fs_config.args,
+            vec![
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "/path/to/allowed/files"
+            ]
+        );
     }
 }
