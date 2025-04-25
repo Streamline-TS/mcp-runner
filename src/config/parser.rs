@@ -80,6 +80,35 @@ pub struct SSEProxyConfig {
     /// Authentication configuration, if None no authentication is required
     #[serde(default)]
     pub authenticate: Option<AuthConfig>,
+
+    /// Binding address for the SSE proxy server, defaults to "127.0.0.1" if not specified
+    #[serde(default = "default_address")]
+    pub address: String,
+
+    /// Port for the SSE proxy server, defaults to 3000 if not specified
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+/// Default address for the SSE proxy
+fn default_address() -> String {
+    "127.0.0.1".to_string()
+}
+
+/// Default port for the SSE proxy
+fn default_port() -> u16 {
+    3000
+}
+
+impl Default for SSEProxyConfig {
+    fn default() -> Self {
+        Self {
+            allowed_servers: None,
+            authenticate: None,
+            address: default_address(),
+            port: default_port(),
+        }
+    }
 }
 
 /// Main configuration for the MCP Runner.

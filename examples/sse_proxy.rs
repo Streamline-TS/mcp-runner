@@ -1,5 +1,4 @@
 use mcp_runner::{McpRunner, error::Result};
-use std::net::SocketAddr;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -26,38 +25,37 @@ async fn main() -> Result<()> {
         let server_ids = runner.start_all_servers().await?;
         info!("Started {} servers", server_ids.len());
         
-        // Start the SSE proxy server
-        let proxy_addr: SocketAddr = "127.0.0.1:3000".parse()
-            .expect("Valid socket address");
-            
-        info!("Starting SSE proxy on {}", proxy_addr);
-        runner.start_sse_proxy(proxy_addr).await?;
+        // Start the SSE proxy server - now using address and port from config
+        info!("Starting SSE proxy with settings from config file");
+        runner.start_sse_proxy().await?;
         
         info!("SSE proxy started successfully!");
         info!("Available HTTP endpoints:");
-        info!(" - SSE events stream:           GET    http://localhost:3000/events");
-        info!(" - Call a tool:                 POST   http://localhost:3000/tool");
-        info!(" - List all servers:            GET    http://localhost:3000/servers");
-        info!(" - List tools for a server:     GET    http://localhost:3000/servers/SERVER_NAME/tools");
-        info!(" - List resources for a server: GET    http://localhost:3000/servers/SERVER_NAME/resources");
-        info!(" - Get resource content:        GET    http://localhost:3000/resource/SERVER_NAME/RESOURCE_URI");
+        
+        // Using values from the example config file
+        let host = "127.0.0.1";
+        let port = 8080;
+        
+        info!(" - SSE events stream:           GET    http://{}:{}/events", host, port);
+        info!(" - Call a tool:                 POST   http://{}:{}/tool", host, port);
+        info!(" - List all servers:            GET    http://{}:{}/servers", host, port);
+        info!(" - List tools for a server:     GET    http://{}:{}/servers/SERVER_NAME/tools", host, port);
+        info!(" - List resources for a server: GET    http://{}:{}/servers/SERVER_NAME/resources", host, port);
+        info!(" - Get resource content:        GET    http://{}:{}/resource/SERVER_NAME/RESOURCE_URI", host, port);
         
         info!("Example tool call with curl:");
-        info!("curl -X POST http://localhost:3000/tool \\");
+        info!("curl -X POST http://{}:{}/tool \\", host, port);
         info!("  -H \"Content-Type: application/json\" \\");
-        // Remove direct access to private config field
-        // For a real application, you would need to add an API method to get the auth token
         info!("  -d '{{\"server\":\"fetch\", \"tool\":\"fetch\", \"args\":{{\"url\":\"https://example.com\"}}}}' ");
         info!("");
         
         info!("Example SSE client with curl:");
-        info!("curl -N http://localhost:3000/events");
+        info!("curl -N http://{}:{}/events", host, port);
         
         info!("");
         info!("Press Ctrl+C to exit");
         
         // Keep the server running until Ctrl+C
-        // Fixed signal handling with proper import
         tokio::signal::ctrl_c().await.expect("Failed to wait for Ctrl+C");
         
         info!("Shutting down");

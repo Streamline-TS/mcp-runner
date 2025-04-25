@@ -302,10 +302,19 @@ impl McpRunner {
     /// Start the SSE proxy server if enabled in configuration
     ///
     /// This method is instrumented with `tracing`.
-    #[tracing::instrument(skip(self), fields(address = %address))]
-    pub async fn start_sse_proxy(&mut self, address: SocketAddr) -> Result<()> {
+    #[tracing::instrument(skip(self))]
+    pub async fn start_sse_proxy(&mut self) -> Result<()> {
         if let Some(proxy_config) = &self.config.sse_proxy {
             tracing::info!("Initializing SSE proxy server");
+            
+            // Parse the address from config
+            let addr_str = format!("{}:{}", proxy_config.address, proxy_config.port);
+            let address: SocketAddr = addr_str.parse().map_err(|e| {
+                tracing::error!(error = %e, address = %addr_str, "Failed to parse SSE proxy address");
+                Error::ConfigInvalid(format!("Invalid SSE proxy address {}: {}", addr_str, e))
+            })?;
+            
+            tracing::info!(address = %address, "Configured SSE proxy address");
             
             // Create a clone of self for the proxy
             let runner_clone = Self {
