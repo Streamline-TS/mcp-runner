@@ -1,0 +1,24 @@
+{
+    "sseProxy": {
+        "allowedServers": ["uvx", "mcp-server-fetch"],
+        "authenticate": {
+            "bearer": {
+                "token": "your token"
+            }
+        }
+    },
+    "mcpServers": {
+      "fetch": {
+        "command": "uvx",
+        "args": ["mcp-server-fetch"]
+      },
+      "filesystem": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/tmp"
+        ]
+      }
+    }
+}

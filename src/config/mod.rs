@@ -29,11 +29,15 @@
 /// };
 ///
 /// servers.insert("fetch".to_string(), server_config);
-/// let config = Config { mcp_servers: servers };
+/// // sse_proxy is optional, so we can use None
+/// let config = Config { 
+///     mcp_servers: servers,
+///     sse_proxy: None,
+/// };
 /// let runner = McpRunner::new(config);
 /// ```
 mod parser;
 pub mod validator;
 
-pub use parser::{Config, ServerConfig};
+pub use parser::{Config, ServerConfig, SSEProxyConfig, AuthConfig, BearerAuthConfig};
 pub use validator::validate_config;

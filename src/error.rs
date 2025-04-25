@@ -28,15 +28,6 @@ use thiserror::Error;
 /// information to help diagnose and handle the error appropriately.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// Indicates an underlying IO error occurred.
-    ///
-    /// This typically happens when:
-    /// - Reading from or writing to files
-    /// - Reading from or writing to process stdin/stdout
-    /// - Network operations
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
     /// Failed to parse configuration from a file or string.
     ///
     /// This error occurs when:
@@ -148,6 +139,24 @@ pub enum Error {
     /// - Types don't match expected schema
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Configuration is valid but contains values that fail validation checks.
+    ///
+    /// This error occurs when:
+    /// - A specified file path doesn't exist.
+    /// - A required field is missing based on context.
+    /// - A value is outside the allowed range or set.
+    #[error("Config validation error: {0}")]
+    ConfigValidation(String),
+
+    /// Unauthorized access error.
+    ///
+    /// This error occurs when:
+    /// - An operation requires authentication but none was provided.
+    /// - The provided authentication token is invalid.
+    /// - The authenticated user does not have permission for the operation.
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
 
     /// Any other error not covered by the above categories.
     ///

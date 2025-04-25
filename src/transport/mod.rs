@@ -1,4 +1,4 @@
-mod json_rpc;
+pub mod json_rpc;
 mod stdio;
 
 use crate::error::Result;

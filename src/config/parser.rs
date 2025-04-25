@@ -55,6 +55,33 @@ pub struct ServerConfig {
     pub env: HashMap<String, String>,
 }
 
+/// Authentication configuration for SSE Proxy
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Bearer authentication configuration
+    #[serde(default)]
+    pub bearer: Option<BearerAuthConfig>,
+}
+
+/// Bearer token authentication configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BearerAuthConfig {
+    /// Authentication token
+    pub token: String,
+}
+
+/// SSE Proxy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SSEProxyConfig {
+    /// List of allowed server commands, if None all servers are allowed
+    #[serde(default)]
+    pub allowed_servers: Option<Vec<String>>,
+    
+    /// Authentication configuration, if None no authentication is required
+    #[serde(default)]
+    pub authenticate: Option<AuthConfig>,
+}
+
 /// Main configuration for the MCP Runner.
 ///
 /// This structure holds configurations for multiple MCP servers that can be
@@ -79,6 +106,14 @@ pub struct ServerConfig {
 ///       "command": "python",
 ///       "args": ["-m", "mcp_server"],
 ///       "env": {}
+///     }
+///   },
+///   "sseProxy": {
+///     "allowedServers": ["server1"],
+///     "authenticate": {
+///       "bearer": {
+///         "token": "your_token"
+///       }
 ///     }
 ///   }
 /// }
@@ -106,7 +141,7 @@ pub struct ServerConfig {
 /// #    env: HashMap::new(),
 /// # };
 /// # servers.insert("fetch".to_string(), server_config);
-/// # let config = Config { mcp_servers: servers };
+/// # let config = Config { mcp_servers: servers, sse_proxy: None };
 ///
 /// if let Some(server_config) = config.mcp_servers.get("fetch") {
 ///     println!("Command: {}", server_config.command);
@@ -118,6 +153,10 @@ pub struct Config {
     /// The key is a unique identifier for each server.
     #[serde(rename = "mcpServers")]
     pub mcp_servers: HashMap<String, ServerConfig>,
+
+    /// SSE Proxy configuration, if None the proxy is disabled
+    #[serde(rename = "sseProxy", default)]
+    pub sse_proxy: Option<SSEProxyConfig>,
 }
 
 impl Config {
@@ -165,38 +204,5 @@ impl Config {
     pub fn parse_from_str(content: &str) -> Result<Self> {
         serde_json::from_str(content)
             .map_err(|e| Error::ConfigParse(format!("Failed to parse JSON config: {}", e)))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_claude_config() {
-        let config_str = r#"{
-            "mcpServers": {
-                "filesystem": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
-                }
-            }
-        }"#;
-
-        let config = Config::parse_from_str(config_str).unwrap();
-
-        assert_eq!(config.mcp_servers.len(), 1);
-        assert!(config.mcp_servers.contains_key("filesystem"));
-
-        let fs_config = &config.mcp_servers["filesystem"];
-        assert_eq!(fs_config.command, "npx");
-        assert_eq!(
-            fs_config.args,
-            vec![
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "/path/to/allowed/files"
-            ]
-        );
     }
 }

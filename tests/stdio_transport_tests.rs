@@ -127,6 +127,38 @@ impl TestableStdioTransport {
     fn get_sent_messages(&self) -> Vec<String> {
         self.mock_stdio.lock().unwrap().get_sent_messages()
     }
+
+    /// Helper function to send a JSON-RPC request and parse the response.
+    async fn send_request_and_parse_response(&self, request: Value) -> Result<Value> {
+        let request_str = serde_json::to_string(&request)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+
+        // Send request to mock stdout
+        {
+            let mut stdio = self.mock_stdio.lock().unwrap();
+            stdio.write_line(&request_str).map_err(|e| Error::Communication(e.to_string()))?;
+        }
+
+        // Read response from mock stdin
+        let response_str = {
+            let mut stdio = self.mock_stdio.lock().unwrap();
+            stdio.read_line().map_err(|e| Error::Communication(e.to_string()))?
+        };
+
+        // Parse the response
+        let response: Value = serde_json::from_str(&response_str)
+            .map_err(|e| Error::Serialization(e.to_string()))?;
+
+        // Check if we have an error
+        if let Some(error) = response.get("error") {
+            return Err(Error::JsonRpc(format!("JSON-RPC error: {:?}", error)));
+        }
+
+        // Extract the result
+        response.get("result")
+            .cloned()
+            .ok_or_else(|| Error::JsonRpc("Missing 'result' field in response".to_string()))
+    }
 }
 
 #[async_trait]
@@ -144,46 +176,14 @@ impl Transport for TestableStdioTransport {
             "params": {}
         });
 
-        let request_str = match serde_json::to_string(&request) {
-            Ok(s) => s,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Send request to mock stdout
-        {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.write_line(&request_str)?;
-        }
-
-        // Read response from mock stdin
-        let response_str = {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.read_line()?
-        };
-
-        // Parse the response
-        let response: Value = match serde_json::from_str(&response_str) {
-            Ok(v) => v,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Check if we have an error
-        if let Some(error) = response.get("error") {
-            return Err(Error::JsonRpc(format!("JSON-RPC error: {:?}", error)));
-        }
+        // Use the helper function
+        let result = self.send_request_and_parse_response(request).await?;
 
         // Extract the tools from the result
-        if let Some(result) = response.get("result") {
-            if let Some(tools) = result.get("tools") {
-                if let Some(tools_array) = tools.as_array() {
-                    return Ok(tools_array.clone());
-                }
-            }
-        }
-
-        Err(Error::JsonRpc(
-            "Invalid listTools response format".to_string(),
-        ))
+        result.get("tools")
+            .and_then(|tools| tools.as_array())
+            .cloned()
+            .ok_or_else(|| Error::JsonRpc("Invalid listTools response format: missing or invalid 'tools' array".to_string()))
     }
 
     async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
@@ -197,42 +197,8 @@ impl Transport for TestableStdioTransport {
             }
         });
 
-        let request_str = match serde_json::to_string(&request) {
-            Ok(s) => s,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Send request to mock stdout
-        {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.write_line(&request_str)?;
-        }
-
-        // Read response from mock stdin
-        let response_str = {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.read_line()?
-        };
-
-        // Parse the response
-        let response: Value = match serde_json::from_str(&response_str) {
-            Ok(v) => v,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Check if we have an error
-        if let Some(error) = response.get("error") {
-            return Err(Error::JsonRpc(format!("JSON-RPC error: {:?}", error)));
-        }
-
-        // Extract the result
-        if let Some(result) = response.get("result") {
-            return Ok(result.clone());
-        }
-
-        Err(Error::JsonRpc(
-            "Invalid callTool response format".to_string(),
-        ))
+        // Use the helper function - the result is directly the tool's output
+        self.send_request_and_parse_response(request).await
     }
 
     async fn list_resources(&self) -> Result<Vec<Value>> {
@@ -243,46 +209,14 @@ impl Transport for TestableStdioTransport {
             "params": {}
         });
 
-        let request_str = match serde_json::to_string(&request) {
-            Ok(s) => s,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Send request to mock stdout
-        {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.write_line(&request_str)?;
-        }
-
-        // Read response from mock stdin
-        let response_str = {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.read_line()?
-        };
-
-        // Parse the response
-        let response: Value = match serde_json::from_str(&response_str) {
-            Ok(v) => v,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Check if we have an error
-        if let Some(error) = response.get("error") {
-            return Err(Error::JsonRpc(format!("JSON-RPC error: {:?}", error)));
-        }
+        // Use the helper function
+        let result = self.send_request_and_parse_response(request).await?;
 
         // Extract the resources from the result
-        if let Some(result) = response.get("result") {
-            if let Some(resources) = result.get("resources") {
-                if let Some(resources_array) = resources.as_array() {
-                    return Ok(resources_array.clone());
-                }
-            }
-        }
-
-        Err(Error::JsonRpc(
-            "Invalid listResources response format".to_string(),
-        ))
+        result.get("resources")
+            .and_then(|resources| resources.as_array())
+            .cloned()
+            .ok_or_else(|| Error::JsonRpc("Invalid listResources response format: missing or invalid 'resources' array".to_string()))
     }
 
     async fn get_resource(&self, uri: &str) -> Result<Value> {
@@ -295,44 +229,13 @@ impl Transport for TestableStdioTransport {
             }
         });
 
-        let request_str = match serde_json::to_string(&request) {
-            Ok(s) => s,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
+        // Use the helper function
+        let result = self.send_request_and_parse_response(request).await?;
 
-        // Send request to mock stdout
-        {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.write_line(&request_str)?;
-        }
-
-        // Read response from mock stdin
-        let response_str = {
-            let mut stdio = self.mock_stdio.lock().unwrap();
-            stdio.read_line()?
-        };
-
-        // Parse the response
-        let response: Value = match serde_json::from_str(&response_str) {
-            Ok(v) => v,
-            Err(e) => return Err(Error::Serialization(e.to_string())),
-        };
-
-        // Check if we have an error
-        if let Some(error) = response.get("error") {
-            return Err(Error::JsonRpc(format!("JSON-RPC error: {:?}", error)));
-        }
-
-        // Extract the result
-        if let Some(result) = response.get("result") {
-            if let Some(resource) = result.get("resource") {
-                return Ok(resource.clone());
-            }
-        }
-
-        Err(Error::JsonRpc(
-            "Invalid getResource response format".to_string(),
-        ))
+        // Extract the resource from the result
+        result.get("resource")
+            .cloned()
+            .ok_or_else(|| Error::JsonRpc("Invalid getResource response format: missing 'resource' field".to_string()))
     }
 }
 
@@ -491,7 +394,8 @@ async fn test_io_error() {
     assert!(result.is_err());
 
     if let Err(e) = result {
-        assert!(matches!(e, Error::Io(_)));
+        // Update assertion to check for Communication error instead of Io
+        assert!(matches!(e, Error::Communication(_)));
         assert!(e.to_string().contains("No more mock input"));
     }
 }

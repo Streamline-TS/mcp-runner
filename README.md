@@ -81,7 +81,7 @@ RUST_LOG=mcp_runner=trace cargo run --example simple_client
 
 ## Configuration
 
-MCP Runner uses JSON configuration to define MCP servers. Example:
+MCP Runner uses JSON configuration to define MCP servers.
 
 ```json
 {
