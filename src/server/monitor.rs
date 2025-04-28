@@ -9,28 +9,34 @@ use tokio::time;
 use tracing;
 
 /// Server health status
+///
+/// Represents the health state of a server based on monitoring checks.
+/// This is used by the ServerMonitor to track and report on server health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerHealth {
-    /// Server is healthy
+    /// Server is healthy and operating normally
     Healthy,
-    /// Server is degraded
+    /// Server is operational but performing sub-optimally
     Degraded,
-    /// Server is unhealthy
+    /// Server is not functioning correctly
     Unhealthy,
-    /// Server health is unknown
+    /// Server health could not be determined
     Unknown,
 }
 
 /// Server monitor configuration
+///
+/// Defines the parameters used by the ServerMonitor to determine how and when
+/// to check server health, and what actions to take based on health status.
 #[derive(Debug, Clone)]
 pub struct ServerMonitorConfig {
-    /// Check interval
+    /// How often to check server health (interval between checks)
     pub check_interval: Duration,
-    /// Health check timeout
+    /// Maximum time to wait for a health check to complete
     pub health_check_timeout: Duration,
-    /// Maximum number of consecutive failures before marking as unhealthy
+    /// Number of consecutive failed checks before marking a server as unhealthy
     pub max_consecutive_failures: u32,
-    /// Auto-restart unhealthy servers
+    /// Whether to automatically restart unhealthy servers
     pub auto_restart: bool,
 }
 

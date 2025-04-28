@@ -1,3 +1,18 @@
+//! SSE proxy implementation for MCP servers.
+//!
+//! This module provides an HTTP and Server-Sent Events (SSE) proxy for MCP servers,
+//! allowing web clients to interact with MCP servers through a unified REST-like API.
+//! The proxy handles HTTP routing, authentication, and SSE event streaming.
+//!
+//! It enables clients to:
+//! - Subscribe to SSE events from MCP servers
+//! - Make tool calls to MCP servers via JSON-RPC
+//! - List available servers, tools, and resources
+//! - Retrieve resources from MCP servers
+//!
+//! The proxy is designed to be robust against network errors and malformed requests,
+//! with comprehensive logging and error handling.
+
 use crate::config::SSEProxyConfig;
 use crate::error::Result;
 use crate::Error;
@@ -17,8 +32,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing;
 
-/// SSE Proxy server
-#[derive(Clone)] // Add Clone derive
+/// SSE Proxy server for MCP servers
+///
+/// Provides an HTTP and SSE proxy that allows web clients to interact with MCP servers.
+/// The proxy supports authentication, server listing, tool calls, and resource retrieval.
+/// It uses Server-Sent Events for real-time updates from MCP servers to clients.
+#[derive(Clone)]
 pub struct SSEProxy {
     /// Configuration for the proxy
     config: SSEProxyConfig,
@@ -32,6 +51,16 @@ pub struct SSEProxy {
 
 impl SSEProxy {
     /// Create a new SSE proxy
+    ///
+    /// # Arguments
+    ///
+    /// * `runner` - MCP runner instance for communicating with MCP servers
+    /// * `config` - Configuration for the SSE proxy
+    /// * `address` - Socket address to bind the proxy server to
+    ///
+    /// # Returns
+    ///
+    /// A new `SSEProxy` instance
     pub fn new(runner: McpRunner, config: SSEProxyConfig, address: SocketAddr) -> Self {
         Self {
             config,
@@ -42,6 +71,14 @@ impl SSEProxy {
     }
 
     /// Start the SSE proxy server
+    ///
+    /// Binds to the configured address and starts listening for client connections.
+    /// For each new connection, spawns a task to handle the connection.
+    /// This is a long-running method that only returns if the server fails to bind.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or failure to bind
     pub async fn start(&self) -> Result<()> {
         tracing::info!(address = %self.address, "Starting SSE proxy server");
 
@@ -74,8 +111,20 @@ impl SSEProxy {
         }
     }
 
-    /// Handle an incoming connection
-    // Update signature to take SSEProxy directly (since it's Clone)
+    /// Handle an incoming HTTP connection
+    ///
+    /// Processes an incoming HTTP connection, parsing the request and routing it
+    /// to the appropriate handler based on the path and method.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - TCP stream for the client connection
+    /// * `_addr` - Socket address of the client
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_connection(stream: TcpStream, _addr: SocketAddr, proxy: SSEProxy) -> Result<()> {
         // Create a buffered reader for the stream
         let (reader, mut writer) = tokio::io::split(stream);
@@ -95,7 +144,8 @@ impl SSEProxy {
         // Parse request line
         let parts: Vec<&str> = line.trim().split_whitespace().collect();
         if parts.len() < 3 {
-            return Err(Error::Communication("Invalid HTTP request line".to_string()));
+            tracing::warn!(line = %line.trim(), "Invalid HTTP request line");
+            return HttpResponse::send_bad_request_response(&mut writer, "Invalid HTTP request format").await;
         }
         let method = parts[0];
         let path = parts[1];
@@ -141,32 +191,56 @@ impl SSEProxy {
             // SSE event stream endpoint
             ("GET", "/events") => {
                 // Use the cloned Arc<EventManager>
-                EventManager::handle_sse_stream(writer, proxy.event_manager.subscribe()).await
+                EventManager::handle_sse_stream(&mut writer, proxy.event_manager.subscribe()).await
             }
             // JSON-RPC initialize endpoint
             ("POST", "/initialize") => {
+                // Add max size limit for security
+                const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
                 let content_length = headers.get("content-length")
                     .and_then(|len| len.parse::<usize>().ok())
                     .unwrap_or(0);
+                
+                if content_length > MAX_BODY_SIZE {
+                    tracing::warn!(length = content_length, "Request body too large");
+                    return HttpResponse::send_bad_request_response(&mut writer, "Request body too large").await;
+                }
+
                 if content_length > 0 {
                     body = vec![0; content_length];
-                    tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await.map_err(|e| {
-                        Error::Communication(format!("Failed to read request body: {}", e))
-                    })?;
+                    match tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to read request body");
+                            return HttpResponse::send_bad_request_response(&mut writer, "Failed to read request body").await;
+                        }
+                    }
                 }
                 // Pass writer directly
                 Self::handle_initialize(&mut writer, &body).await
             }
             // Tool call endpoint (JSON-RPC enforced)
             ("POST", "/tool") => {
+                // Add max size limit for security
+                const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
                 let content_length = headers.get("content-length")
                     .and_then(|len| len.parse::<usize>().ok())
                     .unwrap_or(0);
+                
+                if content_length > MAX_BODY_SIZE {
+                    tracing::warn!(length = content_length, "Request body too large");
+                    return HttpResponse::send_bad_request_response(&mut writer, "Request body too large").await;
+                }
+
                 if content_length > 0 {
                     body = vec![0; content_length];
-                    tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await.map_err(|e| {
-                        Error::Communication(format!("Failed to read request body: {}", e))
-                    })?;
+                    match tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await {
+                        Ok(_) => {},
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to read request body");
+                            return HttpResponse::send_bad_request_response(&mut writer, "Failed to read request body").await;
+                        }
+                    }
                 }
                 // Pass writer and proxy directly
                 Self::handle_tool_call_jsonrpc(&mut writer, &body, proxy).await
@@ -227,8 +301,19 @@ impl SSEProxy {
     }
 
     /// Handle JSON-RPC initialize request
+    ///
+    /// Processes a JSON-RPC initialize request, validating it and returning
+    /// information about the proxy capabilities.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `body` - Request body bytes
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_initialize(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         body: &[u8],
     ) -> Result<()> {
@@ -293,11 +378,23 @@ impl SSEProxy {
     }
 
     /// Handle tool call request as JSON-RPC
+    ///
+    /// Processes a JSON-RPC tool call request, parsing and validating the parameters,
+    /// and then forwarding the call to the appropriate MCP server through the runner.
+    /// The actual tool response is sent asynchronously via SSE.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `body` - Request body bytes
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_tool_call_jsonrpc(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         body: &[u8],
-        // Take proxy directly
         proxy: SSEProxy,
     ) -> Result<()> {
         let req: JsonRpcRequest = match serde_json::from_slice(body) {
@@ -340,31 +437,64 @@ impl SSEProxy {
         // Extract params
         let (server, tool, args) = match &req.params {
             Some(params) => {
-                // Use get_str helper or similar if available, otherwise handle potential type errors
-                let server = params.get("server").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let tool = params.get("tool").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // Improved parameter validation with explicit error handling
+                let server = match params.get("server").and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        let resp = JsonRpcResponse::error(
+                            req.id.clone(),
+                            -32602, // Invalid params
+                            "Invalid 'server' parameter: must be a string",
+                            None,
+                        );
+                        match serde_json::to_string(&resp) {
+                            Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
+                                return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                            }
+                        }
+                    }
+                };
+
+                let tool = match params.get("tool").and_then(|v| v.as_str()) {
+                    Some(t) => t.to_string(),
+                    None => {
+                        let resp = JsonRpcResponse::error(
+                            req.id.clone(),
+                            -32602, // Invalid params
+                            "Invalid 'tool' parameter: must be a string",
+                            None,
+                        );
+                        match serde_json::to_string(&resp) {
+                            Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
+                                return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                            }
+                        }
+                    }
+                };
+
                 let args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
                 (server, tool, args)
             }
-            None => ("".to_string(), "".to_string(), serde_json::json!({})),
-        };
-
-        if server.is_empty() || tool.is_empty() {
-            let resp = JsonRpcResponse::error(
-                req.id.clone(), // Clone id for error response
-                -32602, // Invalid params
-                "Invalid params: 'server' and 'tool' string fields required",
-                None,
-            );
-            // Use HttpResponse helper for error
-            match serde_json::to_string(&resp) {
-                Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
-                Err(serialize_err) => {
-                    tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                    return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+            None => {
+                let resp = JsonRpcResponse::error(
+                    req.id.clone(),
+                    -32602, // Invalid params
+                    "Missing required parameters",
+                    None,
+                );
+                match serde_json::to_string(&resp) {
+                    Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
+                        return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                    }
                 }
             }
-        }
+        };
 
         // Call the tool and respond
         // Use proxy directly, pass request_id as string
@@ -403,10 +533,19 @@ impl SSEProxy {
     }
 
     /// Handle a request to list available servers
+    ///
+    /// Returns a JSON array of server information, including name, ID, and status.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_list_servers(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
-        // Take proxy directly
         proxy: SSEProxy,
     ) -> Result<()> {
         tracing::debug!("Handling list servers request");
@@ -452,11 +591,21 @@ impl SSEProxy {
     }
 
     /// Handle a request to list tools for a specific server
+    ///
+    /// Returns a JSON array of tool information for the specified server.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `server_name` - Name of the server to list tools for
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_list_tools(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         server_name: &str,
-        // Take proxy directly
         proxy: SSEProxy,
     ) -> Result<()> {
         tracing::debug!(server = %server_name, "Handling list tools request");
@@ -521,11 +670,21 @@ impl SSEProxy {
     }
 
     /// Handle a request to list resources for a specific server
+    ///
+    /// Returns a JSON array of resource information for the specified server.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `server_name` - Name of the server to list resources for
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_list_resources(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         server_name: &str,
-        // Take proxy directly
         proxy: SSEProxy,
     ) -> Result<()> {
         tracing::debug!(server = %server_name, "Handling list resources request");
@@ -590,12 +749,23 @@ impl SSEProxy {
     }
 
     /// Handle a request to get a specific resource
+    ///
+    /// Retrieves and returns a specific resource from the specified server.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - TCP stream writer for sending the response
+    /// * `server_name` - Name of the server to get resource from
+    /// * `resource_uri` - URI of the resource to retrieve
+    /// * `proxy` - SSE proxy instance
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn handle_get_resource(
-        // Take writer by mutable reference
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         server_name: &str,
         resource_uri: &str,
-        // Take proxy directly
         proxy: SSEProxy,
     ) -> Result<()> {
         tracing::debug!(server = %server_name, uri = %resource_uri, "Handling get resource request");
@@ -651,7 +821,21 @@ impl SSEProxy {
     }
 
     /// Process a tool call request from a client
-    // Takes &self now, as it uses the shared Arc<EventManager>
+    ///
+    /// Asynchronously calls a tool on the specified server and sends the result
+    /// via SSE when it completes. This method handles authentication, parameter validation,
+    /// and error handling.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_name` - Name of the server to call the tool on
+    /// * `tool_name` - Name of the tool to call
+    /// * `args` - Arguments to pass to the tool
+    /// * `request_id` - Unique identifier for the request
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or an error
     async fn process_tool_call(&self, server_name: &str, tool_name: &str, args: serde_json::Value, request_id: &str) -> Result<()> {
         tracing::debug!(server = %server_name, tool = %tool_name, req_id = %request_id, "Processing tool call");
 
@@ -748,14 +932,31 @@ impl SSEProxy {
         }
     }
 
-    /// Send a server status update to all clients
-    // Takes &self now
+    /// Send a server status update to all connected clients
+    ///
+    /// Broadcasts a status update event to all connected SSE clients.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_id` - ID of the server whose status changed
+    /// * `server_name` - Name of the server
+    /// * `status` - New status of the server
     pub fn send_status_update(&self, server_id: ServerId, server_name: &str, status: &str) {
         // Use shared event_manager
         self.event_manager.send_status_update(server_id, server_name, status);
     }
 
-    /// Check if a token is valid
+    /// Check if a token is valid for authentication
+    ///
+    /// Validates a bearer token against the configured authentication settings.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - Bearer token to validate
+    ///
+    /// # Returns
+    ///
+    /// `true` if the token is valid or if no authentication is configured, `false` otherwise
     pub fn is_valid_token(&self, token: &str) -> bool {
         if let Some(auth) = &self.config.authenticate {
             if let Some(bearer) = &auth.bearer {

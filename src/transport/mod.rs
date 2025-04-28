@@ -1,3 +1,13 @@
+//! Transport module for communication with MCP servers.
+//!
+//! This module provides transport layer implementations for communicating with 
+//! Model Context Protocol (MCP) servers. It defines a common `Transport` trait
+//! that abstracts the communication details and provides implementations for
+//! different transport mechanisms.
+//!
+//! Currently supported transport mechanisms:
+//! - `StdioTransport`: Communicates with MCP servers via standard input/output
+
 pub mod json_rpc;
 mod stdio;
 

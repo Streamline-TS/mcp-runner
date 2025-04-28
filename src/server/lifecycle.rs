@@ -1,3 +1,9 @@
+//! Server lifecycle management for MCP servers.
+//!
+//! This module provides functionality to track and manage the lifecycle of MCP servers,
+//! including recording lifecycle events, tracking server status changes, and retrieving
+//! event history.
+
 use crate::error::{Error, Result};
 use crate::server::{ServerId, ServerStatus};
 use std::collections::HashMap;
@@ -19,6 +25,9 @@ pub enum ServerLifecycleEvent {
 }
 
 /// Server lifecycle event
+///
+/// Represents a single event in a server's lifecycle, including details about
+/// what happened and when it occurred.
 #[derive(Debug, Clone)]
 pub struct ServerEvent {
     /// Server ID
@@ -34,6 +43,9 @@ pub struct ServerEvent {
 }
 
 /// Server lifecycle manager
+///
+/// Manages the lifecycle events and status for MCP servers.
+/// All public methods are instrumented with `tracing` spans.
 pub struct ServerLifecycleManager {
     /// Server events
     events: Arc<Mutex<Vec<ServerEvent>>>,
@@ -52,7 +64,19 @@ impl ServerLifecycleManager {
 
     /// Record a server event
     ///
+    /// Records a lifecycle event for a server and updates its status accordingly.
     /// This method is instrumented with `tracing`.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the server
+    /// * `name` - The name of the server
+    /// * `event` - The lifecycle event type
+    /// * `details` - Optional details about the event
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating success or failure
     #[tracing::instrument(skip(self), fields(server_id = %id, server_name = %name, event_type = ?event))]
     pub fn record_event(
         &self,
@@ -110,6 +134,16 @@ impl ServerLifecycleManager {
     }
 
     /// Get server status
+    ///
+    /// Retrieves the current status of a server.
+    /// 
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the server
+    ///
+    /// # Returns
+    ///
+    /// A `Result<ServerStatus>` containing the server's status if successful
     pub fn get_status(&self, id: ServerId) -> Result<ServerStatus> {
         let statuses = self
             .statuses
@@ -123,6 +157,18 @@ impl ServerLifecycleManager {
     }
 
     /// Get recent events for a server
+    ///
+    /// Retrieves a list of recent events for a specific server, sorted by
+    /// timestamp with newest events first.
+    /// 
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the server
+    /// * `limit` - Optional maximum number of events to return
+    ///
+    /// # Returns
+    ///
+    /// A `Result<Vec<ServerEvent>>` containing the server events if successful
     pub fn get_server_events(
         &self,
         id: ServerId,
@@ -148,6 +194,17 @@ impl ServerLifecycleManager {
     }
 
     /// Get all events
+    ///
+    /// Retrieves all server events across all servers, sorted by
+    /// timestamp with newest events first.
+    /// 
+    /// # Arguments
+    ///
+    /// * `limit` - Optional maximum number of events to return
+    ///
+    /// # Returns
+    ///
+    /// A `Result<Vec<ServerEvent>>` containing all events if successful
     pub fn get_all_events(&self, limit: Option<usize>) -> Result<Vec<ServerEvent>> {
         let events = self
             .events
@@ -168,6 +225,12 @@ impl ServerLifecycleManager {
     }
 
     /// Clear events
+    ///
+    /// Removes all stored server events.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or failure
     pub fn clear_events(&self) -> Result<()> {
         let mut events = self
             .events

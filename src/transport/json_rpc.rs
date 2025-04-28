@@ -1,3 +1,12 @@
+//! JSON-RPC implementation for MCP communication.
+//!
+//! This module provides types and utilities for JSON-RPC 2.0 communication 
+//! with MCP servers. It includes structures for requests, responses, notifications,
+//! and error handling, along with helper methods for creating common MCP request types.
+//!
+//! The implementation follows the JSON-RPC 2.0 specification and adapts it specifically
+//! for the Model Context Protocol's requirements.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;

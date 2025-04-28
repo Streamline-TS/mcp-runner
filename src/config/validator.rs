@@ -1,3 +1,9 @@
+//! Configuration validation module.
+//!
+//! This module provides functions for validating MCP Runner configurations,
+//! ensuring that configuration values are valid and consistent before they
+//! are used to create and manage server processes.
+
 use crate::config::{Config, ServerConfig, SSEProxyConfig};
 use crate::error::{Error, Result};
 use std::collections::HashMap;
@@ -47,7 +53,19 @@ pub fn validate_server_configs(configs: &HashMap<String, ServerConfig>) -> Resul
     Ok(())
 }
 
-/// Validate SSE Proxy configuration
+/// Validates an SSE proxy configuration.
+///
+/// This function checks that the SSE proxy configuration is valid.
+/// Currently, there's no specific validation needed, but this function 
+/// exists for future validation requirements.
+///
+/// # Arguments
+///
+/// * `config` - The SSE proxy configuration to validate
+///
+/// # Returns
+///
+/// A `Result` indicating success or failure
 pub fn validate_sse_proxy_config(_config: &SSEProxyConfig) -> Result<()> {
     // Currently, there's no validation needed for SSE proxy config
     // This function exists for future validation needs

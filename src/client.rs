@@ -1,14 +1,14 @@
-/// Client module for interacting with MCP servers.
-///
-/// This module provides the `McpClient` class which serves as the main interface
-/// for communicating with Model Context Protocol servers. It allows applications to:
-/// - List available tools provided by an MCP server
-/// - Call tools with arguments
-/// - List available resources
-/// - Retrieve resource content
-///
-/// The client is transport-agnostic and can work with any implementation of the
-/// `Transport` trait, though the library primarily focuses on StdioTransport.
+//! Client module for interacting with MCP servers.
+//!
+//! This module provides the `McpClient` class which serves as the main interface
+//! for communicating with Model Context Protocol servers. It allows applications to:
+//! - List available tools provided by an MCP server
+//! - Call tools with arguments
+//! - List available resources
+//! - Retrieve resource content
+//!
+//! The client is transport-agnostic and can work with any implementation of the
+//! `Transport` trait, though the library primarily focuses on StdioTransport.
 use crate::error::{Error, Result};
 use crate::transport::Transport;
 use serde::{Deserialize, Serialize};

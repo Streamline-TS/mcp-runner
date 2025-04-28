@@ -1,3 +1,8 @@
+//! Type definitions for the proxy module.
+//!
+//! This module contains shared types used throughout the proxy module, including
+//! structures for representing server information, tools, resources, and SSE events.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -37,25 +42,36 @@ pub struct ResourceInfo {
 /// Type of SSE message payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")] // Use tag/content for clearer serialization
-pub enum SSEEvent { // Renamed from MessageType for clarity, represents payload structure
-    /// Tool call response
+pub enum SSEEvent { 
+    /// Tool call response event containing the result of a tool call
     ToolResponse {
+        /// Unique ID of the request that triggered this response
         request_id: String,
+        /// ID of the server that processed the request
         server_id: String,
+        /// Name of the tool that was called
         tool_name: String,
+        /// Response data from the tool
         response: Value,
     },
-    /// Tool call error
+    /// Tool call error event when a tool call fails
     ToolError {
+        /// Unique ID of the request that triggered this error
         request_id: String,
+        /// ID of the server that processed the request
         server_id: String,
+        /// Name of the tool that was called
         tool_name: String,
+        /// Error message describing what went wrong
         error: String,
     },
-    /// Server status update
+    /// Server status update event when a server's status changes
     ServerStatus {
+        /// ID of the server whose status changed
         server_id: String,
+        /// Name of the server
         server_name: String,
+        /// New status of the server (e.g., "Running", "Stopped", "Failed")
         status: String,
     },
 }
@@ -69,17 +85,21 @@ pub struct SSEMessage {
     pub data: String, 
     /// Optional event ID
     pub id: Option<String>,
-    // Removed redundant fields now covered by SSEEvent in data
-    // pub message_type: MessageType, 
-    // pub request_id: String,
-    // pub server_id: String,
-    // pub tool: Option<String>,
-    // pub data: Value, 
-    // pub timestamp: String, 
 }
 
 // Add helper methods for SSEMessage formatting
 impl SSEMessage {
+    /// Creates a new SSE message with the given event type, data payload, and optional ID
+    ///
+    /// # Arguments
+    ///
+    /// * `event` - The event type (e.g., "tool-response", "tool-error", "server-status")
+    /// * `data` - The data payload as a JSON string
+    /// * `id` - Optional event ID for correlation
+    ///
+    /// # Returns
+    ///
+    /// A new `SSEMessage` instance
     pub fn new(event: &str, data: &str, id: Option<&str>) -> Self {
         Self {
             event: event.to_string(),
@@ -89,6 +109,13 @@ impl SSEMessage {
     }
 
     /// Format the message according to SSE spec
+    ///
+    /// Format an SSE message according to the Server-Sent Events specification,
+    /// with proper line prefixes and formatting.
+    ///
+    /// # Returns
+    ///
+    /// A string containing the formatted SSE message
     pub fn format(&self) -> String {
         let mut formatted = String::new();
         if let Some(id) = &self.id {

@@ -1,13 +1,32 @@
+//! HTTP response utilities for the proxy module.
+//!
+//! This module provides helper functions for generating HTTP responses in various formats,
+//! including JSON responses, error responses, and CORS headers. These utilities are used
+//! by the SSE proxy to handle HTTP requests.
+
 use crate::error::Result;
 use crate::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
-/// HTTP response helper functions
+/// HTTP response helper functions for constructing and sending HTTP responses
+///
+/// This struct provides static methods for generating and sending different types of
+/// HTTP responses, such as JSON responses, error responses, and CORS preflight responses.
+/// All methods take a mutable reference to a TcpStream writer and return a Result.
 pub struct HttpResponse;
 
 impl HttpResponse {
     /// Send a 200 OK response with JSON content
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    /// * `json` - JSON string to send in the response body
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_json_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         json: &str,
@@ -33,6 +52,15 @@ impl HttpResponse {
     }
     
     /// Send a 400 Bad Request response with a message
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    /// * `message` - Error message to include in the response
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_bad_request_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         message: &str,
@@ -41,6 +69,14 @@ impl HttpResponse {
     }
     
     /// Send a 401 Unauthorized response
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_unauthorized_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
     ) -> Result<()> {
@@ -62,6 +98,15 @@ impl HttpResponse {
     }
     
     /// Send a 403 Forbidden response with a message
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    /// * `message` - Error message to include in the response
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_forbidden_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         message: &str,
@@ -70,6 +115,14 @@ impl HttpResponse {
     }
     
     /// Send a 404 Not Found response
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_not_found_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
     ) -> Result<()> {
@@ -90,6 +143,16 @@ impl HttpResponse {
     }
     
     /// Send a custom error response with status code and message
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    /// * `status_code` - HTTP status code to use
+    /// * `message` - Error message to include in the response
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn send_error_response(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         status_code: u16,
@@ -125,6 +188,17 @@ impl HttpResponse {
     }
     
     /// Handle an OPTIONS request for CORS
+    ///
+    /// Responds to CORS preflight requests with appropriate headers to enable
+    /// cross-origin requests.
+    ///
+    /// # Arguments
+    ///
+    /// * `writer` - Mutable reference to a TCP stream writer
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or a communication error
     pub async fn handle_options_request(
         writer: &mut tokio::io::WriteHalf<TcpStream>,
     ) -> Result<()> {

@@ -1,24 +1,24 @@
-/// Error handling module for MCP Runner.
-///
-/// This module defines the error types used throughout the library.
-/// It provides a comprehensive set of errors that can occur when
-/// working with MCP servers, along with helpful context for debugging.
-///
-/// # Example
-///
-/// ```
-/// use mcp_runner::{McpRunner, error::{Error, Result}};
-///
-/// fn handle_error(result: Result<()>) {
-///     match result {
-///         Ok(_) => println!("Operation succeeded"),
-///         Err(Error::ServerNotFound(name)) => println!("Server '{}' not found in configuration", name),
-///         Err(Error::Communication(msg)) => println!("Communication error: {}", msg),
-///         Err(Error::Timeout(msg)) => println!("Operation timed out: {}", msg),
-///         Err(e) => println!("Other error: {}", e),
-///     }
-/// }
-/// ```
+//! Error handling module for MCP Runner.
+//!
+//! This module defines the error types used throughout the library.
+//! It provides a comprehensive set of errors that can occur when
+//! working with MCP servers, along with helpful context for debugging.
+//!
+//! # Example
+//!
+//! ```
+//! use mcp_runner::{McpRunner, error::{Error, Result}};
+//!
+//! fn handle_error(result: Result<()>) {
+//!     match result {
+//!         Ok(_) => println!("Operation succeeded"),
+//!         Err(Error::ServerNotFound(name)) => println!("Server '{}' not found in configuration", name),
+//!         Err(Error::Communication(msg)) => println!("Communication error: {}", msg),
+//!         Err(Error::Timeout(msg)) => println!("Operation timed out: {}", msg),
+//!         Err(e) => println!("Other error: {}", e),
+//!     }
+//! }
+//! ```
 use thiserror::Error;
 
 /// Errors that can occur in the mcp-runner library.
