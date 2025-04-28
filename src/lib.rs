@@ -194,6 +194,7 @@ impl McpRunner {
             .collect();
         tracing::debug!(servers_to_start = ?server_names);
 
+        // Start servers sequentially but with improved error handling
         let mut ids = Vec::new();
         let mut errors = Vec::new();
 
@@ -208,8 +209,28 @@ impl McpRunner {
         }
 
         if !errors.is_empty() {
-            tracing::warn!(num_failed = errors.len(), "Some servers failed to start");
-            return Err(errors.remove(0).1);
+            tracing::warn!(
+                num_failed = errors.len(),
+                "Some servers failed to start: {:?}",
+                errors
+                    .iter()
+                    .map(|(name, _): &(String, Error)| name.as_str())
+                    .collect::<Vec<_>>()
+            );
+            // Create an aggregate error message including all failures
+            if errors.len() == 1 {
+                return Err(errors.remove(0).1);
+            } else {
+                let error_msg = errors
+                    .iter()
+                    .map(|(name, e)| format!("{}: {}", name, e))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(Error::Other(format!(
+                    "Multiple servers failed to start: {}",
+                    error_msg
+                )));
+            }
         }
 
         tracing::info!(num_started = ids.len(), "Finished starting all servers");
@@ -339,7 +360,6 @@ impl McpRunner {
 
         // Collect all server IDs first to avoid borrowing issues
         let server_ids: Vec<ServerId> = self.servers.keys().copied().collect();
-        let mut errors = Vec::new();
 
         // Stop the SSE proxy first if it's running
         if self.sse_proxy.is_some() {
@@ -349,14 +369,15 @@ impl McpRunner {
             tracing::info!("SSE proxy stopped");
         }
 
-        // Stop all servers
-        tracing::info!(server_count = server_ids.len(), "Stopping all servers");
+        // Stop servers sequentially but with improved error handling
+        let mut errors = Vec::new();
+
         for id in server_ids {
             match self.stop_server(id).await {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::error!(server_id = ?id, error = %e, "Failed to stop server");
-                    errors.push(e);
+                    errors.push((id, e));
                 }
             }
         }
@@ -366,7 +387,20 @@ impl McpRunner {
             Ok(())
         } else {
             tracing::warn!(error_count = errors.len(), "Some servers failed to stop");
-            Err(errors.remove(0))
+            // Create an aggregate error message including all failures
+            if errors.len() == 1 {
+                return Err(errors.remove(0).1);
+            } else {
+                let error_msg = errors
+                    .iter()
+                    .map(|(id, e)| format!("{:?}: {}", id, e))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(Error::Other(format!(
+                    "Multiple servers failed to stop: {}",
+                    error_msg
+                )));
+            }
         }
     }
 
@@ -404,16 +438,19 @@ impl McpRunner {
     /// Get a client for a server
     ///
     /// This method is instrumented with `tracing`.
+    ///
+    /// If the client already exists in cache, a `ClientAlreadyCached` error is returned.
+    /// In this case, you can retrieve the cached client using specialized methods like
+    /// `get_server_tools` that handle the cache internally.
     #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub fn get_client(&mut self, id: ServerId) -> Result<McpClient> {
         tracing::info!("Getting client for server");
 
         // First check if we already have a client for this server
         if let Some(Some(_client)) = self.clients.get(&id) {
-            tracing::debug!("Using cached client");
-            // We can't return a reference to the cached client directly because McpClient doesn't implement Clone
-            // Instead we'll return an error so caller knows to handle the case with specialized methods
-            return Err(Error::Other("Client already exists in cache".to_string()));
+            tracing::debug!("Client already exists in cache");
+            // Return a specific error type for this case
+            return Err(Error::ClientAlreadyCached);
         }
 
         // Check if we've already tried to get a client but it failed
@@ -482,17 +519,13 @@ impl McpRunner {
 
             tracing::info!(address = %address, "Configured SSE proxy address");
 
-            // Create a clone of self for the proxy
-            let runner_clone = Self {
-                config: self.config.clone(),
-                servers: HashMap::new(),
-                server_names: HashMap::new(),
-                sse_proxy: None,
-                clients: HashMap::new(),
-            };
+            // Instead of creating a full McpRunner clone, create a minimal config clone
+            // that contains only what the proxy needs
+            let config_for_proxy = self.config.clone();
 
-            // Create and start the proxy
-            let proxy = SSEProxy::new(runner_clone, proxy_config.clone(), address);
+            // Create and start the proxy with just the configuration it needs,
+            // instead of a full runner clone
+            let proxy = SSEProxy::new_with_config(config_for_proxy, proxy_config.clone(), address);
 
             // Store the proxy instance
             self.sse_proxy = Some(proxy.clone());
@@ -698,6 +731,7 @@ impl McpRunner {
         // Check if we already have a client for this server
         let client_from_cache = if let Some(Some(_client)) = self.clients.get(&server_id) {
             tracing::debug!("Using cached client");
+            // Return a specific error type for this case
             true
         } else {
             false
@@ -744,10 +778,11 @@ impl McpRunner {
 
         match &result {
             Ok(tools) => {
-                tracing::info!(num_tools = tools.len(), "Successfully retrieved tools");
+                let tools_len = tools.len();
+                tracing::info!(server = %name, num_tools = tools_len, "Successfully retrieved tools");
             }
             Err(e) => {
-                tracing::error!(error = %e, "Failed to get tools");
+                tracing::error!(server = %name, error = %e, "Failed to get tools");
             }
         }
 
@@ -801,27 +836,30 @@ impl McpRunner {
         // Need to collect keys to avoid borrowing issues
         let server_names: Vec<String> = self.server_names.keys().cloned().collect();
 
-        for server_name in server_names {
-            tracing::debug!(server = %server_name, "Getting tools");
+        // Process each server sequentially with timeout protection
+        for name in server_names {
+            tracing::debug!(server = %name, "Getting tools");
             // For each server, get its tools with a timeout to prevent hanging
-            // Increase timeout from 5 seconds to 15 seconds for slower servers
-            let tools_result = tokio::time::timeout(
+            let result = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
-                self.get_server_tools(&server_name),
+                self.get_server_tools(&name),
             )
             .await;
 
             // Process the result, handling timeout case separately
-            let final_result = match tools_result {
+            let final_result = match result {
                 Ok(inner_result) => inner_result,
                 Err(_) => {
-                    tracing::warn!(server = %server_name, "Timed out getting tools");
-                    Err(Error::Timeout("Tool listing timed out".to_string()))
+                    tracing::warn!(server = %name, "Timed out getting tools");
+                    Err(Error::Timeout(format!(
+                        "Tool listing for server '{}' timed out",
+                        name
+                    )))
                 }
             };
 
             // Store the result (success or error) in the map
-            all_tools.insert(server_name, final_result);
+            all_tools.insert(name, final_result);
         }
 
         tracing::debug!(

@@ -586,6 +586,7 @@ dependencies = [
  "assert_fs",
  "async-process",
  "async-trait",
+ "futures",
  "futures-lite",
  "jsonrpc-core",
  "mockall",

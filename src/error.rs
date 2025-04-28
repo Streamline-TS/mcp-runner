@@ -158,6 +158,13 @@ pub enum Error {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    /// The client is already cached.
+    ///
+    /// This error occurs when:
+    /// - There is an attempt to cache a client that is already cached.
+    #[error("Client already cached")]
+    ClientAlreadyCached,
+
     /// Any other error not covered by the above categories.
     ///
     /// This is a catch-all error for cases not explicitly handled elsewhere.

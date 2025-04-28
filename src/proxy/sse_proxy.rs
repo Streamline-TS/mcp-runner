@@ -69,6 +69,36 @@ impl SSEProxy {
         }
     }
 
+    /// Create a new SSE proxy with just configuration instead of a full runner
+    ///
+    /// This is a more efficient constructor that only requires the configuration instead
+    /// of a full McpRunner instance, which reduces the overhead of creating the proxy.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Global configuration for all MCP servers
+    /// * `proxy_config` - Configuration for the SSE proxy
+    /// * `address` - Socket address to bind the proxy server to
+    ///
+    /// # Returns
+    ///
+    /// A new `SSEProxy` instance
+    pub fn new_with_config(
+        config: crate::Config,
+        proxy_config: SSEProxyConfig,
+        address: SocketAddr,
+    ) -> Self {
+        // Create a minimal runner with just the configuration
+        let runner = McpRunner::new(config);
+
+        Self {
+            config: proxy_config,
+            runner: Arc::new(Mutex::new(runner)),
+            event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
+            address,
+        }
+    }
+
     /// Start the SSE proxy server
     ///
     /// Binds to the configured address and starts listening for client connections.
