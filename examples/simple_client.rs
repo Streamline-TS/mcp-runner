@@ -19,11 +19,21 @@ async fn main() -> Result<()> {
     let config_path = "examples/config.json";
     let mut runner = McpRunner::from_config_file(config_path)?;
 
-    // Start both servers
-    info!("Starting the fetch server...");
-    let fetch_server_id = runner.start_server("fetch").await?;
-    info!("Starting the filesystem server...");
-    let fs_server_id = runner.start_server("filesystem").await?;
+    // Start all servers and the SSE proxy (if configured) in one call
+    info!("Starting all servers and proxy if configured...");
+    let (server_ids_result, proxy_started) = runner.start_all_with_proxy().await;
+
+    // Check if servers started successfully
+    let server_ids = server_ids_result?;
+    info!("Started {} servers", server_ids.len());
+
+    if proxy_started {
+        info!("SSE proxy started successfully");
+    }
+
+    // Get the server IDs for our specific servers
+    let fetch_server_id = runner.get_server_id("fetch")?;
+    let fs_server_id = runner.get_server_id("filesystem")?;
 
     // First, work with the fetch server
     info!("=== Fetch Server ===");

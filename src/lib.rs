@@ -8,9 +8,9 @@
  MCP Runner provides functionality to:
  - Start and manage MCP server processes
  - Communicate with MCP servers using JSON-RPC
- - Configure MCP servers through config files
  - List and call tools provided by MCP servers
  - Access resources exposed by MCP servers
+ - Optionally proxy SSE (Server-Sent Events) to the servers for external clients
 
  ## Basic Usage
 
@@ -58,6 +58,7 @@
  - **Configuration**: Configure servers through JSON config files
  - **Error Handling**: Comprehensive error handling
  - **Async Support**: Full async/await support
+ - **SSE Proxy**: Support for SSE proxying with authentication and CORS
 
  ## License
 
@@ -210,6 +211,71 @@ impl McpRunner {
 
         tracing::info!(num_started = ids.len(), "Finished starting all servers");
         Ok(ids)
+    }
+
+    /// Start all configured servers and the SSE proxy if configured
+    ///
+    /// This is a convenience method that starts all configured MCP servers
+    /// and then starts the SSE proxy if it's configured. This ensures that
+    /// all servers are available before the proxy begins accepting connections.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - A `Result<Vec<ServerId>>` with server IDs for all started servers, or an error
+    /// - A `bool` indicating whether the SSE proxy was started
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     // Create runner from config
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///
+    ///     // Start all servers and proxy if configured
+    ///     let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
+    ///     
+    ///     // Check if servers started successfully
+    ///     let server_ids = server_ids?;
+    ///     println!("Started {} servers", server_ids.len());
+    ///     
+    ///     if proxy_started {
+    ///         println!("SSE proxy started successfully");
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub async fn start_all_with_proxy(&mut self) -> (Result<Vec<ServerId>>, bool) {
+        // First start all servers
+        let server_result = self.start_all_servers().await;
+
+        // Only attempt to start proxy if servers started successfully
+        let proxy_started = if server_result.is_ok() && self.is_sse_proxy_configured() {
+            match self.start_sse_proxy().await {
+                Ok(_) => {
+                    tracing::info!("SSE proxy started automatically");
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to start SSE proxy");
+                    false
+                }
+            }
+        } else {
+            if self.is_sse_proxy_configured() {
+                tracing::warn!("Not starting SSE proxy because servers failed to start");
+            }
+            false
+        };
+
+        (server_result, proxy_started)
     }
 
     /// Stop a running server

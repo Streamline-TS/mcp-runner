@@ -70,22 +70,73 @@ pub struct BearerAuthConfig {
     pub token: String,
 }
 
-/// SSE Proxy configuration
+/// Server-Sent Events (SSE) Proxy configuration
+///
+/// This structure defines the configuration for the SSE proxy server, which allows
+/// web clients to connect to MCP servers via HTTP and receive real-time updates
+/// through Server-Sent Events. The proxy provides authentication, server access control,
+/// and network binding options.
+///
+/// # Examples
+///
+/// Basic SSE proxy configuration with default address and port:
+///
+/// ```
+/// use mcp_runner::config::SSEProxyConfig;
+///
+/// let proxy_config = SSEProxyConfig {
+///     allowed_servers: None,         // Allow all servers
+///     authenticate: None,            // No authentication required
+///     address: "127.0.0.1".to_string(),
+///     port: 3000,
+/// };
+/// ```
+///
+/// Secure SSE proxy configuration with restrictions:
+///
+/// ```
+/// use mcp_runner::config::{SSEProxyConfig, AuthConfig, BearerAuthConfig};
+///
+/// let auth_config = AuthConfig {
+///     bearer: Some(BearerAuthConfig {
+///         token: "secure_token_string".to_string(),
+///     }),
+/// };
+///
+/// let proxy_config = SSEProxyConfig {
+///     allowed_servers: Some(vec!["fetch-server".to_string(), "embedding-server".to_string()]),
+///     authenticate: Some(auth_config),
+///     address: "0.0.0.0".to_string(),  // Listen on all interfaces
+///     port: 8080,
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SSEProxyConfig {
-    /// List of allowed server commands, if None all servers are allowed
+    /// List of allowed server names that clients can access
+    ///
+    /// When specified, only servers in this list can be accessed through the proxy.
+    /// If `None`, all servers defined in the configuration are accessible.
     #[serde(default)]
     pub allowed_servers: Option<Vec<String>>,
 
-    /// Authentication configuration, if None no authentication is required
+    /// Authentication configuration for securing the proxy
+    ///
+    /// When specified, clients must provide valid authentication credentials.
+    /// If `None`, the proxy accepts all connections without authentication.
     #[serde(default)]
     pub authenticate: Option<AuthConfig>,
 
-    /// Binding address for the SSE proxy server, defaults to "127.0.0.1" if not specified
+    /// Network address the proxy server will bind to
+    ///
+    /// Use "127.0.0.1" to allow only local connections, or "0.0.0.0" to accept
+    /// connections from any network interface.
     #[serde(default = "default_address")]
     pub address: String,
 
-    /// Port for the SSE proxy server, defaults to 3000 if not specified
+    /// TCP port the proxy server will listen on
+    ///
+    /// The port must be available and not require elevated privileges (typically
+    /// ports above 1024 unless running with administrator/root privileges).
     #[serde(default = "default_port")]
     pub port: u16,
 }

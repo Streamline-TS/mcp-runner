@@ -14,6 +14,7 @@ MCP Runner provides a complete solution for managing Model Context Protocol serv
 - Communicating with MCP servers using JSON-RPC
 - Listing and calling tools exposed by MCP servers
 - Accessing resources provided by MCP servers
+- Proxying Server-Sent Events (SSE) to enable clients to connect to MCP servers
 
 ## Installation
 
@@ -38,10 +39,16 @@ async fn main() -> Result<()> {
     // Create runner from config file
     let mut runner = McpRunner::from_config_file("config.json")?;
     
-    // Start server
-    let server_id = runner.start_server("fetch").await?;
+    // Start all servers and the SSE proxy if configured
+    let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
+    let server_ids = server_ids?;
     
-    // Get client for interacting with the server
+    if proxy_started {
+        println!("SSE proxy started successfully");
+    }
+    
+    // Get client for interacting with a specific server
+    let server_id = runner.get_server_id("fetch")?;
     let client = runner.get_client(server_id)?;
     
     // Initialize the client
@@ -81,7 +88,7 @@ RUST_LOG=mcp_runner=trace cargo run --example simple_client
 
 ## Configuration
 
-MCP Runner uses JSON configuration to define MCP servers.
+MCP Runner uses JSON configuration to define MCP servers and optional SSE proxy settings.
 
 ```json
 {
@@ -93,6 +100,16 @@ MCP Runner uses JSON configuration to define MCP servers.
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"]
+    }
+  },
+  "sseProxy": {
+    "address": "127.0.0.1",
+    "port": 3000,
+    "allowedServers": ["fetch", "filesystem"],
+    "authenticate": {
+      "bearer": {
+        "token": "your-secure-token"
+      }
     }
   }
 }
@@ -145,6 +162,23 @@ let config = Config { mcp_servers: servers };
 let runner = McpRunner::new(config);
 ```
 
+## Error Handling
+
+MCP Runner uses a custom error type that covers:
+- Configuration errors
+- Server lifecycle errors
+- Communication errors
+- Serialization errors
+
+```rust
+match result {
+    Ok(value) => println!("Success: {:?}", value),
+    Err(Error::ServerNotFound(name)) => println!("Server not found: {}", name),
+    Err(Error::Communication(msg)) => println!("Communication error: {}", msg),
+    Err(e) => println!("Other error: {}", e),
+}
+```
+
 ## Core Components
 
 ### McpRunner
@@ -170,22 +204,77 @@ let result = client.call_tool("fetch", &json!({
 })).await?;
 ```
 
-## Error Handling
+## SSE Proxy
 
-MCP Runner uses a custom error type that covers:
-- Configuration errors
-- Server lifecycle errors
-- Communication errors
-- Serialization errors
+The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers through HTTP and receive real-time updates using the Server-Sent Events protocol. 
+
+### Features
+
+- **HTTP API Gateway**: Provides REST-like HTTP endpoints for accessing MCP server functionality
+- **Authentication**: Optional Bearer token authentication for secure access
+- **Server Access Control**: Restrict which servers can be accessed through the proxy
+- **Event Streaming**: Real-time updates from MCP servers to clients via SSE
+- **Cross-Origin Support**: Built-in CORS support for web browser clients
+
+### Starting the Proxy
+
+You can start the SSE proxy automatically when starting your servers:
 
 ```rust
-match result {
-    Ok(value) => println!("Success: {:?}", value),
-    Err(Error::ServerNotFound(name)) => println!("Server not found: {}", name),
-    Err(Error::Communication(msg)) => println!("Communication error: {}", msg),
-    Err(e) => println!("Other error: {}", e),
+// Start all servers and the proxy if configured
+let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
+let server_ids = server_ids?;
+
+if proxy_started {
+    println!("SSE proxy started successfully");
 }
 ```
+
+Or manually start it after configuring your servers:
+
+```rust
+if runner.is_sse_proxy_configured() {
+    runner.start_sse_proxy().await?;
+    println!("SSE proxy started manually");
+}
+```
+
+### Proxy Configuration
+
+Configure the SSE proxy in your configuration file:
+
+```json
+{
+  "mcpServers": { /* server configs */ },
+  "sseProxy": {
+    "address": "127.0.0.1",  // Listen address (localhost only)
+    "port": 3000,            // Port to listen on
+    "allowedServers": [      // Optional: restrict which servers can be accessed
+      "fetch", 
+      "embedding"
+    ],
+    "authenticate": {        // Optional: require authentication
+      "bearer": {
+        "token": "your-secure-token-here"
+      }
+    }
+  }
+}
+```
+
+### Proxy API Endpoints
+
+The SSE proxy exposes the following HTTP endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/events` | GET | SSE event stream endpoint for receiving real-time updates |
+| `/initialize` | POST | JSON-RPC initialize endpoint for client initialization |
+| `/tool` | POST | Tool call endpoint for invoking MCP server tools |
+| `/servers` | GET | List available MCP servers and their status |
+| `/servers/{name}/tools` | GET | List available tools for a specific server |
+| `/servers/{name}/resources` | GET | List available resources for a specific server |
+| `/resource/{server}/{uri}` | GET | Get a specific resource from a server |
 
 ## Examples
 
@@ -196,7 +285,50 @@ Check the `examples/` directory for more usage examples:
   # Run with info level logging
   RUST_LOG=info cargo run --example simple_client
   ```  
-- more to come
+- `sse_proxy.rs`: Example of using the SSE proxy to expose MCP servers to web clients
+  ```bash
+  # Run with info level logging
+  RUST_LOG=info cargo run --example sse_proxy
+  ```
+  
+  This example uses the config in `examples/sse_config.json` to start servers and an SSE proxy,
+  allowing web clients to connect and interact with MCP servers through HTTP and SSE.
+  
+  JavaScript client example:
+  ```javascript
+  // Connect to the event stream
+  const eventSource = new EventSource('http://localhost:3000/events');
+  eventSource.addEventListener('tool-response', (event) => {
+    const response = JSON.parse(event.data);
+    console.log('Received tool response:', response);
+  });
+
+  // Make a tool call
+  async function callTool() {
+    const response = await fetch('http://localhost:3000/tool', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer your-secure-token-here'
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          server: 'fetch',
+          tool: 'fetch',
+          arguments: {
+            url: 'https://modelcontextprotocol.io'
+          }
+        }
+      })
+    });
+    const result = await response.json();
+    console.log('Tool call initiated:', result);
+    // Actual response will come through the SSE event stream
+  }
+  ```
 
 ## Contributing
 
