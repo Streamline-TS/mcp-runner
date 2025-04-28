@@ -67,11 +67,11 @@
 pub mod client;
 pub mod config;
 pub mod error;
+pub mod proxy;
 pub mod server;
 pub mod transport;
-pub mod proxy;
 
-pub use client::McpClient;  // Re-export McpClient as public
+pub use client::McpClient; // Re-export McpClient as public
 pub use config::Config;
 pub use error::{Error, Result};
 pub use proxy::SSEProxy;
@@ -80,8 +80,7 @@ pub use server::{ServerId, ServerProcess, ServerStatus};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use tracing;
-use transport::StdioTransport; // Import tracing
+use transport::StdioTransport;
 
 /// Configure and run MCP servers
 ///
@@ -298,7 +297,7 @@ impl McpRunner {
         tracing::info!("Client created successfully");
         Ok(client)
     }
-    
+
     /// Start the SSE proxy server if enabled in configuration
     ///
     /// This method is instrumented with `tracing`.
@@ -306,16 +305,16 @@ impl McpRunner {
     pub async fn start_sse_proxy(&mut self) -> Result<()> {
         if let Some(proxy_config) = &self.config.sse_proxy {
             tracing::info!("Initializing SSE proxy server");
-            
+
             // Parse the address from config
             let addr_str = format!("{}:{}", proxy_config.address, proxy_config.port);
             let address: SocketAddr = addr_str.parse().map_err(|e| {
                 tracing::error!(error = %e, address = %addr_str, "Failed to parse SSE proxy address");
                 Error::ConfigInvalid(format!("Invalid SSE proxy address {}: {}", addr_str, e))
             })?;
-            
+
             tracing::info!(address = %address, "Configured SSE proxy address");
-            
+
             // Create a clone of self for the proxy
             let runner_clone = Self {
                 config: self.config.clone(),
@@ -323,31 +322,33 @@ impl McpRunner {
                 server_names: HashMap::new(),
                 sse_proxy: None,
             };
-            
+
             // Create and start the proxy
             let proxy = SSEProxy::new(runner_clone, proxy_config.clone(), address);
-            
+
             // Store the proxy instance
             self.sse_proxy = Some(proxy.clone());
-            
+
             // Start the proxy in a background task
             let proxy_arc = std::sync::Arc::new(proxy);
             let proxy_clone = std::sync::Arc::clone(&proxy_arc);
-            
+
             tokio::spawn(async move {
                 if let Err(e) = (*proxy_clone).start().await {
                     tracing::error!(error = %e, "SSE proxy server failed");
                 }
             });
-            
+
             tracing::info!("SSE proxy server started on {}", address);
             Ok(())
         } else {
             tracing::warn!("SSE proxy not configured, skipping start");
-            Err(Error::Other("SSE proxy not configured in config".to_string()))
+            Err(Error::Other(
+                "SSE proxy not configured in config".to_string(),
+            ))
         }
     }
-    
+
     /// Check if the SSE proxy is enabled in configuration
     ///
     /// This method is instrumented with `tracing`.

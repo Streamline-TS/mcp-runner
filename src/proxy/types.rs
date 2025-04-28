@@ -42,7 +42,7 @@ pub struct ResourceInfo {
 /// Type of SSE message payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")] // Use tag/content for clearer serialization
-pub enum SSEEvent { 
+pub enum SSEEvent {
     /// Tool call response event containing the result of a tool call
     ToolResponse {
         /// Unique ID of the request that triggered this response
@@ -80,9 +80,9 @@ pub enum SSEEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SSEMessage {
     /// Event type name (e.g., "tool-response", "server-status")
-    pub event: String, 
+    pub event: String,
     /// Payload data (JSON string of SSEEvent)
-    pub data: String, 
+    pub data: String,
     /// Optional event ID
     pub id: Option<String>,
 }
@@ -126,7 +126,7 @@ impl SSEMessage {
         for line in self.data.lines() {
             formatted.push_str(&format!("data: {}\n", line));
         }
-        formatted.push_str("\n"); // End with an extra newline
+        formatted.push('\n'); // End with an extra newline
         formatted
     }
 }

@@ -136,7 +136,7 @@ impl ServerLifecycleManager {
     /// Get server status
     ///
     /// Retrieves the current status of a server.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The ID of the server
@@ -160,7 +160,7 @@ impl ServerLifecycleManager {
     ///
     /// Retrieves a list of recent events for a specific server, sorted by
     /// timestamp with newest events first.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `id` - The ID of the server
@@ -197,7 +197,7 @@ impl ServerLifecycleManager {
     ///
     /// Retrieves all server events across all servers, sorted by
     /// timestamp with newest events first.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `limit` - Optional maximum number of events to return

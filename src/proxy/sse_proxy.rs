@@ -13,15 +13,15 @@
 //! The proxy is designed to be robust against network errors and malformed requests,
 //! with comprehensive logging and error handling.
 
-use crate::config::SSEProxyConfig;
-use crate::error::Result;
 use crate::Error;
 use crate::McpRunner;
+use crate::config::SSEProxyConfig;
+use crate::error::Result;
 use crate::server::ServerId;
 
 use crate::proxy::events::EventManager;
 use crate::proxy::http::HttpResponse;
-use crate::proxy::types::{ServerInfo, ToolInfo, ResourceInfo};
+use crate::proxy::types::{ResourceInfo, ServerInfo, ToolInfo};
 use crate::transport::json_rpc::{JsonRpcRequest, JsonRpcResponse};
 
 use std::collections::HashMap;
@@ -125,7 +125,11 @@ impl SSEProxy {
     /// # Returns
     ///
     /// A `Result<()>` indicating success or an error
-    async fn handle_connection(stream: TcpStream, _addr: SocketAddr, proxy: SSEProxy) -> Result<()> {
+    async fn handle_connection(
+        stream: TcpStream,
+        _addr: SocketAddr,
+        proxy: SSEProxy,
+    ) -> Result<()> {
         // Create a buffered reader for the stream
         let (reader, mut writer) = tokio::io::split(stream);
         let mut buf_reader = tokio::io::BufReader::new(reader);
@@ -136,16 +140,20 @@ impl SSEProxy {
 
         // Read the request line and headers
         let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut line).await.map_err(|e| {
-            Error::Communication(format!("Failed to read request line: {}", e))
-        })?;
+        tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut line)
+            .await
+            .map_err(|e| Error::Communication(format!("Failed to read request line: {}", e)))?;
         tracing::debug!(request = %line.trim(), "Received HTTP request");
 
         // Parse request line
-        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() < 3 {
             tracing::warn!(line = %line.trim(), "Invalid HTTP request line");
-            return HttpResponse::send_bad_request_response(&mut writer, "Invalid HTTP request format").await;
+            return HttpResponse::send_bad_request_response(
+                &mut writer,
+                "Invalid HTTP request format",
+            )
+            .await;
         }
         let method = parts[0];
         let path = parts[1];
@@ -153,9 +161,9 @@ impl SSEProxy {
         // Read headers
         loop {
             let mut header_line = String::new();
-            tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut header_line).await.map_err(|e| {
-                Error::Communication(format!("Failed to read header: {}", e))
-            })?;
+            tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut header_line)
+                .await
+                .map_err(|e| Error::Communication(format!("Failed to read header: {}", e)))?;
 
             let line = header_line.trim();
             if line.is_empty() {
@@ -171,8 +179,8 @@ impl SSEProxy {
         if let Some(auth) = &proxy.config.authenticate {
             if let Some(bearer) = &auth.bearer {
                 let token = if let Some(auth_header) = headers.get("authorization") {
-                    if auth_header.starts_with("Bearer ") {
-                        auth_header[7..].to_string()
+                    if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
+                        stripped.to_string()
                     } else {
                         return HttpResponse::send_unauthorized_response(&mut writer).await;
                     }
@@ -197,22 +205,31 @@ impl SSEProxy {
             ("POST", "/initialize") => {
                 // Add max size limit for security
                 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
-                let content_length = headers.get("content-length")
+                let content_length = headers
+                    .get("content-length")
                     .and_then(|len| len.parse::<usize>().ok())
                     .unwrap_or(0);
-                
+
                 if content_length > MAX_BODY_SIZE {
                     tracing::warn!(length = content_length, "Request body too large");
-                    return HttpResponse::send_bad_request_response(&mut writer, "Request body too large").await;
+                    return HttpResponse::send_bad_request_response(
+                        &mut writer,
+                        "Request body too large",
+                    )
+                    .await;
                 }
 
                 if content_length > 0 {
                     body = vec![0; content_length];
                     match tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to read request body");
-                            return HttpResponse::send_bad_request_response(&mut writer, "Failed to read request body").await;
+                            return HttpResponse::send_bad_request_response(
+                                &mut writer,
+                                "Failed to read request body",
+                            )
+                            .await;
                         }
                     }
                 }
@@ -223,22 +240,31 @@ impl SSEProxy {
             ("POST", "/tool") => {
                 // Add max size limit for security
                 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
-                let content_length = headers.get("content-length")
+                let content_length = headers
+                    .get("content-length")
                     .and_then(|len| len.parse::<usize>().ok())
                     .unwrap_or(0);
-                
+
                 if content_length > MAX_BODY_SIZE {
                     tracing::warn!(length = content_length, "Request body too large");
-                    return HttpResponse::send_bad_request_response(&mut writer, "Request body too large").await;
+                    return HttpResponse::send_bad_request_response(
+                        &mut writer,
+                        "Request body too large",
+                    )
+                    .await;
                 }
 
                 if content_length > 0 {
                     body = vec![0; content_length];
                     match tokio::io::AsyncReadExt::read_exact(&mut buf_reader, &mut body).await {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
                             tracing::error!(error = %e, "Failed to read request body");
-                            return HttpResponse::send_bad_request_response(&mut writer, "Failed to read request body").await;
+                            return HttpResponse::send_bad_request_response(
+                                &mut writer,
+                                "Failed to read request body",
+                            )
+                            .await;
                         }
                     }
                 }
@@ -289,14 +315,10 @@ impl SSEProxy {
             }
 
             // OPTIONS for CORS
-            ("OPTIONS", _) => {
-                HttpResponse::handle_options_request(&mut writer).await
-            }
+            ("OPTIONS", _) => HttpResponse::handle_options_request(&mut writer).await,
 
             // Not found for other paths
-            _ => {
-                HttpResponse::send_not_found_response(&mut writer).await
-            }
+            _ => HttpResponse::send_not_found_response(&mut writer).await,
         }
     }
 
@@ -317,7 +339,7 @@ impl SSEProxy {
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         body: &[u8],
     ) -> Result<()> {
-        use crate::transport::json_rpc::{JsonRpcRequest, JsonRpcResponse, JSON_RPC_VERSION};
+        use crate::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcRequest, JsonRpcResponse};
         let req: JsonRpcRequest = match serde_json::from_slice(body) {
             Ok(r) => r,
             Err(e) => {
@@ -333,7 +355,12 @@ impl SSEProxy {
                     Err(serialize_err) => {
                         tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
                         // Fallback to generic 500 if serialization fails
-                        return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                        return HttpResponse::send_error_response(
+                            writer,
+                            500,
+                            "Internal server error during error reporting",
+                        )
+                        .await;
                     }
                 }
             }
@@ -351,7 +378,12 @@ impl SSEProxy {
                 Ok(json) => return HttpResponse::send_json_response(writer, &json).await, // Send as 200 OK with JSON error body
                 Err(serialize_err) => {
                     tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                    return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                    return HttpResponse::send_error_response(
+                        writer,
+                        500,
+                        "Internal server error during error reporting",
+                    )
+                    .await;
                 }
             }
         }
@@ -372,7 +404,12 @@ impl SSEProxy {
             Ok(json) => HttpResponse::send_json_response(writer, &json).await,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to serialize JSON-RPC success response");
-                HttpResponse::send_error_response(writer, 500, "Internal server error during response serialization").await
+                HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    "Internal server error during response serialization",
+                )
+                .await
             }
         }
     }
@@ -411,7 +448,12 @@ impl SSEProxy {
                     Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
                     Err(serialize_err) => {
                         tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                        return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                        return HttpResponse::send_error_response(
+                            writer,
+                            500,
+                            "Internal server error during error reporting",
+                        )
+                        .await;
                     }
                 }
             }
@@ -420,7 +462,7 @@ impl SSEProxy {
         if req.method != "tools/call" {
             let resp = JsonRpcResponse::error(
                 req.id.clone(), // Clone id for error response
-                -32601, // Method not found
+                -32601,         // Method not found
                 "Method not found (expected 'tools/call')",
                 None,
             );
@@ -429,7 +471,12 @@ impl SSEProxy {
                 Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
                 Err(serialize_err) => {
                     tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                    return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                    return HttpResponse::send_error_response(
+                        writer,
+                        500,
+                        "Internal server error during error reporting",
+                    )
+                    .await;
                 }
             }
         }
@@ -448,10 +495,17 @@ impl SSEProxy {
                             None,
                         );
                         match serde_json::to_string(&resp) {
-                            Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
+                            Ok(json) => {
+                                return HttpResponse::send_json_response(writer, &json).await;
+                            }
                             Err(e) => {
                                 tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                                return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                                return HttpResponse::send_error_response(
+                                    writer,
+                                    500,
+                                    "Internal server error during error reporting",
+                                )
+                                .await;
                             }
                         }
                     }
@@ -467,16 +521,26 @@ impl SSEProxy {
                             None,
                         );
                         match serde_json::to_string(&resp) {
-                            Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
+                            Ok(json) => {
+                                return HttpResponse::send_json_response(writer, &json).await;
+                            }
                             Err(e) => {
                                 tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                                return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                                return HttpResponse::send_error_response(
+                                    writer,
+                                    500,
+                                    "Internal server error during error reporting",
+                                )
+                                .await;
                             }
                         }
                     }
                 };
 
-                let args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
                 (server, tool, args)
             }
             None => {
@@ -490,7 +554,12 @@ impl SSEProxy {
                     Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                        return HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await;
+                        return HttpResponse::send_error_response(
+                            writer,
+                            500,
+                            "Internal server error during error reporting",
+                        )
+                        .await;
                     }
                 }
             }
@@ -499,17 +568,27 @@ impl SSEProxy {
         // Call the tool and respond
         // Use proxy directly, pass request_id as string
         let request_id_str = req.id.to_string(); // Convert JsonRpcId to string for process_tool_call
-        let result = proxy.process_tool_call(&server, &tool, args, &request_id_str).await;
+        let result = proxy
+            .process_tool_call(&server, &tool, args, &request_id_str)
+            .await;
 
         match result {
             Ok(_) => {
                 // Send success response (tool result is sent via SSE)
-                let resp = JsonRpcResponse::success(req.id, serde_json::json!({ "status": "accepted", "request_id": request_id_str }));
+                let resp = JsonRpcResponse::success(
+                    req.id,
+                    serde_json::json!({ "status": "accepted", "request_id": request_id_str }),
+                );
                 match serde_json::to_string(&resp) {
                     Ok(json) => HttpResponse::send_json_response(writer, &json).await,
                     Err(e) => {
                         tracing::error!(error = %e, "Failed to serialize JSON-RPC success response");
-                        HttpResponse::send_error_response(writer, 500, "Internal server error during response serialization").await
+                        HttpResponse::send_error_response(
+                            writer,
+                            500,
+                            "Internal server error during response serialization",
+                        )
+                        .await
                     }
                 }
             }
@@ -521,11 +600,16 @@ impl SSEProxy {
                     format!("Tool call failed: {}", e),
                     None, // No additional data for this error
                 );
-                 match serde_json::to_string(&resp) {
+                match serde_json::to_string(&resp) {
                     Ok(json) => HttpResponse::send_json_response(writer, &json).await, // Send as 200 OK with JSON error body
                     Err(serialize_err) => {
                         tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                        HttpResponse::send_error_response(writer, 500, "Internal server error during error reporting").await
+                        HttpResponse::send_error_response(
+                            writer,
+                            500,
+                            "Internal server error during error reporting",
+                        )
+                        .await
                     }
                 }
             }
@@ -555,7 +639,7 @@ impl SSEProxy {
         let mut servers = Vec::new();
 
         // Collect information about all servers in the config
-        for (name, _) in &runner.config.mcp_servers {
+        for name in runner.config.mcp_servers.keys() {
             let server_info = match runner.get_server_id(name) {
                 Ok(id) => {
                     let status = match runner.server_status(id) {
@@ -568,7 +652,7 @@ impl SSEProxy {
                         id: format!("{:?}", id),
                         status,
                     }
-                },
+                }
                 Err(_) => {
                     // Server not started yet
                     ServerInfo {
@@ -614,7 +698,8 @@ impl SSEProxy {
         if let Some(allowed_servers) = &proxy.config.allowed_servers {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
-                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list").await;
+                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
+                    .await;
             }
         }
 
@@ -635,7 +720,12 @@ impl SSEProxy {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-                return HttpResponse::send_error_response(writer, 500, &format!("Failed to get client: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    &format!("Failed to get client: {}", e),
+                )
+                .await;
             }
         };
 
@@ -647,17 +737,23 @@ impl SSEProxy {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!(server = %server_name, error = %e, "Failed to list tools");
-                return HttpResponse::send_error_response(writer, 500, &format!("Failed to list tools: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    &format!("Failed to list tools: {}", e),
+                )
+                .await;
             }
         };
 
         // Convert to response format
-        let tool_infos: Vec<ToolInfo> = tools.into_iter()
+        let tool_infos: Vec<ToolInfo> = tools
+            .into_iter()
             .map(|t| ToolInfo {
                 name: t.name,
                 description: t.description,
                 // Handle Option for parameters_schema, defaulting to json!(null)
-                parameters_schema: t.input_schema.unwrap_or_else(|| serde_json::json!(null)),
+                parameters_schema: t.input_schema.unwrap_or(serde_json::Value::Null),
             })
             .collect();
 
@@ -693,7 +789,8 @@ impl SSEProxy {
         if let Some(allowed_servers) = &proxy.config.allowed_servers {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
-                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list").await;
+                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
+                    .await;
             }
         }
 
@@ -714,7 +811,12 @@ impl SSEProxy {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-                return HttpResponse::send_error_response(writer, 500, &format!("Failed to get client: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    &format!("Failed to get client: {}", e),
+                )
+                .await;
             }
         };
 
@@ -726,12 +828,18 @@ impl SSEProxy {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(server = %server_name, error = %e, "Failed to list resources");
-                return HttpResponse::send_error_response(writer, 500, &format!("Failed to list resources: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    &format!("Failed to list resources: {}", e),
+                )
+                .await;
             }
         };
 
         // Convert to response format
-        let resource_infos: Vec<ResourceInfo> = resources.into_iter()
+        let resource_infos: Vec<ResourceInfo> = resources
+            .into_iter()
             .map(|r| ResourceInfo {
                 name: r.name,
                 uri: r.uri,
@@ -741,8 +849,9 @@ impl SSEProxy {
             .collect();
 
         // Convert to JSON
-        let json = serde_json::to_string(&resource_infos)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize resource list: {}", e)))?;
+        let json = serde_json::to_string(&resource_infos).map_err(|e| {
+            Error::Serialization(format!("Failed to serialize resource list: {}", e))
+        })?;
 
         // Send response using helper
         HttpResponse::send_json_response(writer, &json).await
@@ -774,7 +883,8 @@ impl SSEProxy {
         if let Some(allowed_servers) = &proxy.config.allowed_servers {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
-                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list").await;
+                return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
+                    .await;
             }
         }
 
@@ -795,7 +905,12 @@ impl SSEProxy {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-                return HttpResponse::send_error_response(writer, 500, &format!("Failed to get client: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    500,
+                    &format!("Failed to get client: {}", e),
+                )
+                .await;
             }
         };
 
@@ -808,13 +923,19 @@ impl SSEProxy {
             Err(e) => {
                 tracing::error!(server = %server_name, uri = %resource_uri, error = %e, "Failed to get resource");
                 // Use 404 for resource not found specifically
-                return HttpResponse::send_error_response(writer, 404, &format!("Resource not found or error getting resource: {}", e)).await;
+                return HttpResponse::send_error_response(
+                    writer,
+                    404,
+                    &format!("Resource not found or error getting resource: {}", e),
+                )
+                .await;
             }
         };
 
         // Convert to JSON
-        let json = serde_json::to_string(&resource_data)
-            .map_err(|e| Error::Serialization(format!("Failed to serialize resource data: {}", e)))?;
+        let json = serde_json::to_string(&resource_data).map_err(|e| {
+            Error::Serialization(format!("Failed to serialize resource data: {}", e))
+        })?;
 
         // Send response using helper
         HttpResponse::send_json_response(writer, &json).await
@@ -836,7 +957,13 @@ impl SSEProxy {
     /// # Returns
     ///
     /// A `Result<()>` indicating success or an error
-    async fn process_tool_call(&self, server_name: &str, tool_name: &str, args: serde_json::Value, request_id: &str) -> Result<()> {
+    async fn process_tool_call(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: serde_json::Value,
+        request_id: &str,
+    ) -> Result<()> {
         tracing::debug!(server = %server_name, tool = %tool_name, req_id = %request_id, "Processing tool call");
 
         // Check if this server is allowed
@@ -849,10 +976,12 @@ impl SSEProxy {
                     request_id,
                     "unknown", // Server ID is unknown if name isn't allowed/found
                     tool_name,
-                    &format!("Server not in allowed list: {}", server_name)
+                    &format!("Server not in allowed list: {}", server_name),
                 );
 
-                return Err(Error::Unauthorized("Server not in allowed list".to_string()));
+                return Err(Error::Unauthorized(
+                    "Server not in allowed list".to_string(),
+                ));
             }
         }
 
@@ -870,7 +999,7 @@ impl SSEProxy {
                     request_id,
                     "unknown", // Server ID is unknown
                     tool_name,
-                    &format!("Server not found: {}", server_name)
+                    &format!("Server not found: {}", server_name),
                 );
 
                 return Err(e);
@@ -889,7 +1018,7 @@ impl SSEProxy {
                     request_id,
                     &server_id_str,
                     tool_name,
-                    &format!("Failed to get client: {}", e)
+                    &format!("Failed to get client: {}", e),
                 );
 
                 return Err(e);
@@ -911,7 +1040,7 @@ impl SSEProxy {
                     request_id,
                     &server_id_str,
                     tool_name,
-                    response
+                    response,
                 );
 
                 Ok(())
@@ -924,7 +1053,7 @@ impl SSEProxy {
                     request_id,
                     &server_id_str,
                     tool_name,
-                    &format!("Tool call failed: {}", e)
+                    &format!("Tool call failed: {}", e),
                 );
 
                 Err(e)
@@ -943,7 +1072,8 @@ impl SSEProxy {
     /// * `status` - New status of the server
     pub fn send_status_update(&self, server_id: ServerId, server_name: &str, status: &str) {
         // Use shared event_manager
-        self.event_manager.send_status_update(server_id, server_name, status);
+        self.event_manager
+            .send_status_update(server_id, server_name, status);
     }
 
     /// Check if a token is valid for authentication

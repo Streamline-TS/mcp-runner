@@ -41,7 +41,7 @@
 
 // Re-exports
 pub use self::sse_proxy::SSEProxy;
-pub use self::types::{ServerInfo, ToolInfo, ResourceInfo, SSEMessage, SSEEvent};
+pub use self::types::{ResourceInfo, SSEEvent, SSEMessage, ServerInfo, ToolInfo};
 
 // Submodules
 pub mod events;

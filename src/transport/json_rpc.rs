@@ -1,6 +1,6 @@
 //! JSON-RPC implementation for MCP communication.
 //!
-//! This module provides types and utilities for JSON-RPC 2.0 communication 
+//! This module provides types and utilities for JSON-RPC 2.0 communication
 //! with MCP servers. It includes structures for requests, responses, notifications,
 //! and error handling, along with helper methods for creating common MCP request types.
 //!

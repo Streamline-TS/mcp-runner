@@ -30,7 +30,7 @@
 //!
 //! servers.insert("fetch".to_string(), server_config);
 //! // sse_proxy is optional, so we can use None
-//! let config = Config { 
+//! let config = Config {
 //!     mcp_servers: servers,
 //!     sse_proxy: None,
 //! };
@@ -39,5 +39,5 @@
 mod parser;
 pub mod validator;
 
-pub use parser::{Config, ServerConfig, SSEProxyConfig, AuthConfig, BearerAuthConfig};
+pub use parser::{AuthConfig, BearerAuthConfig, Config, SSEProxyConfig, ServerConfig};
 pub use validator::validate_config;

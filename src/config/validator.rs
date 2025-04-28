@@ -4,7 +4,7 @@
 //! ensuring that configuration values are valid and consistent before they
 //! are used to create and manage server processes.
 
-use crate::config::{Config, ServerConfig, SSEProxyConfig};
+use crate::config::{Config, SSEProxyConfig, ServerConfig};
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 
@@ -46,7 +46,10 @@ pub fn validate_server_config(config: &ServerConfig) -> Result<()> {
 pub fn validate_server_configs(configs: &HashMap<String, ServerConfig>) -> Result<()> {
     for (name, config) in configs {
         validate_server_config(config).map_err(|e| {
-            Error::ConfigValidation(format!("Invalid configuration for server '{}': {}", name, e))
+            Error::ConfigValidation(format!(
+                "Invalid configuration for server '{}': {}",
+                name, e
+            ))
         })?;
     }
 
@@ -56,7 +59,7 @@ pub fn validate_server_configs(configs: &HashMap<String, ServerConfig>) -> Resul
 /// Validates an SSE proxy configuration.
 ///
 /// This function checks that the SSE proxy configuration is valid.
-/// Currently, there's no specific validation needed, but this function 
+/// Currently, there's no specific validation needed, but this function
 /// exists for future validation requirements.
 ///
 /// # Arguments
@@ -69,7 +72,7 @@ pub fn validate_server_configs(configs: &HashMap<String, ServerConfig>) -> Resul
 pub fn validate_sse_proxy_config(_config: &SSEProxyConfig) -> Result<()> {
     // Currently, there's no validation needed for SSE proxy config
     // This function exists for future validation needs
-    
+
     Ok(())
 }
 
@@ -91,7 +94,7 @@ pub fn validate_config(config: &HashMap<String, ServerConfig>) -> Result<()> {
 }
 
 /// Validates a complete Config object
-/// 
+///
 /// This validates both the server configurations and SSE proxy config if present
 ///
 /// # Arguments
@@ -104,11 +107,11 @@ pub fn validate_config(config: &HashMap<String, ServerConfig>) -> Result<()> {
 pub fn validate_full_config(config: &Config) -> Result<()> {
     // Validate server configs
     validate_server_configs(&config.mcp_servers)?;
-    
+
     // Validate SSE proxy config if present
     if let Some(proxy_config) = &config.sse_proxy {
         validate_sse_proxy_config(proxy_config)?;
     }
-    
+
     Ok(())
 }

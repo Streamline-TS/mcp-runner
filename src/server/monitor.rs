@@ -195,13 +195,11 @@ impl ServerMonitor {
                                             "Auto-restart triggered (logic not implemented)"
                                         );
                                     }
-                                } else {
-                                    if counts.contains_key(&server_id)
-                                        && *counts.get(&server_id).unwrap() > 0
-                                    {
-                                        tracing::info!("Resetting failure count");
-                                        counts.insert(server_id, 0);
-                                    }
+                                } else if counts.contains_key(&server_id)
+                                    && *counts.get(&server_id).unwrap() > 0
+                                {
+                                    tracing::info!("Resetting failure count");
+                                    counts.insert(server_id, 0);
                                 }
                             }
                         }
@@ -330,11 +328,9 @@ impl ServerMonitor {
                         "Auto-restart triggered by forced check (logic not implemented)"
                     );
                 }
-            } else {
-                if failure_counts.contains_key(&id) && *failure_counts.get(&id).unwrap() > 0 {
-                    tracing::info!("Resetting failure count (forced check)");
-                    failure_counts.insert(id, 0);
-                }
+            } else if failure_counts.contains_key(&id) && *failure_counts.get(&id).unwrap() > 0 {
+                tracing::info!("Resetting failure count (forced check)");
+                failure_counts.insert(id, 0);
             }
         }
 

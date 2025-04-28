@@ -76,7 +76,7 @@ pub struct SSEProxyConfig {
     /// List of allowed server commands, if None all servers are allowed
     #[serde(default)]
     pub allowed_servers: Option<Vec<String>>,
-    
+
     /// Authentication configuration, if None no authentication is required
     #[serde(default)]
     pub authenticate: Option<AuthConfig>,

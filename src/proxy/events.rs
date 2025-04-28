@@ -7,8 +7,8 @@
 //! SSE provides a mechanism for sending updates from the server to clients over
 //! an HTTP connection. This module implements the SSE protocol specification.
 
-use crate::error::Result;
 use crate::Error;
+use crate::error::Result;
 use crate::proxy::types::{SSEEvent, SSEMessage};
 use crate::server::ServerId;
 use serde_json::Value;
@@ -40,7 +40,7 @@ impl EventManager {
         let (sender, _) = broadcast::channel(capacity);
         Self { sender }
     }
-    
+
     /// Get a new receiver for the broadcast channel
     ///
     /// This method creates and returns a new subscriber to the broadcast channel,
@@ -52,7 +52,7 @@ impl EventManager {
     pub fn subscribe(&self) -> broadcast::Receiver<SSEMessage> {
         self.sender.subscribe()
     }
-    
+
     /// Send a tool response event to all connected clients
     ///
     /// # Arguments
@@ -88,13 +88,7 @@ impl EventManager {
     /// * `server_id` - Identifier of the server that attempted to execute the tool
     /// * `tool_name` - Name of the tool that was called
     /// * `error` - Error message describing what went wrong
-    pub fn send_tool_error(
-        &self,
-        request_id: &str,
-        server_id: &str,
-        tool_name: &str,
-        error: &str,
-    ) {
+    pub fn send_tool_error(&self, request_id: &str, server_id: &str, tool_name: &str, error: &str) {
         // Create the SSEEvent payload
         let event_payload = SSEEvent::ToolError {
             request_id: request_id.to_string(),
@@ -125,7 +119,7 @@ impl EventManager {
         // Send the event with the correct type name
         self.send_event("server-status", &event_payload, None);
     }
-    
+
     /// Handle SSE request stream for a connected client
     ///
     /// This method manages an SSE connection with a client, sending events as they
@@ -151,16 +145,18 @@ impl EventManager {
                        Connection: keep-alive\r\n\
                        Access-Control-Allow-Origin: *\r\n\
                        \r\n";
-        
-        writer.write_all(response.as_bytes()).await.map_err(|e| {
-            Error::Communication(format!("Failed to send SSE headers: {}", e))
-        })?;
-        
+
+        writer
+            .write_all(response.as_bytes())
+            .await
+            .map_err(|e| Error::Communication(format!("Failed to send SSE headers: {}", e)))?;
+
         // Send initial keep-alive comment
-        writer.write_all(b": welcome to MCP Runner SSE stream\n\n").await.map_err(|e| {
-            Error::Communication(format!("Failed to send welcome message: {}", e))
-        })?;
-        
+        writer
+            .write_all(b": welcome to MCP Runner SSE stream\n\n")
+            .await
+            .map_err(|e| Error::Communication(format!("Failed to send welcome message: {}", e)))?;
+
         // Stream events
         loop {
             tokio::select! {
@@ -172,7 +168,7 @@ impl EventManager {
                                 tracing::error!(error = %e, "Failed to write SSE message");
                                 break;
                             }
-                            
+
                             // Ensure message is sent
                             if let Err(e) = writer.flush().await {
                                 tracing::error!(error = %e, "Failed to flush SSE message");
@@ -191,7 +187,7 @@ impl EventManager {
                         tracing::error!(error = %e, "Failed to send keepalive");
                         break;
                     }
-                    
+
                     if let Err(e) = writer.flush().await {
                         tracing::error!(error = %e, "Failed to flush keepalive");
                         break;
@@ -199,30 +195,34 @@ impl EventManager {
                 }
             }
         }
-        
+
         Ok(())
     }
-    
+
     // Private helper to send an event
     // Takes a serializable payload (like SSEEvent)
     fn send_event<T: serde::Serialize>(&self, event_type: &str, payload: &T, id: Option<&str>) {
-        match serde_json::to_string(payload) { // Serialize the payload (SSEEvent)
+        match serde_json::to_string(payload) {
+            // Serialize the payload (SSEEvent)
             Ok(json_data) => {
                 // Create the SSEMessage envelope with the serialized data
                 let message = SSEMessage::new(event_type, &json_data, id);
-                
+
                 // Only try to send if there are receivers
                 if self.sender.receiver_count() > 0 {
                     // Try multiple times if broadcasting fails but there are still receivers
                     let mut retry_count = 0;
                     const MAX_RETRIES: usize = 3;
-                    
+
                     while retry_count < MAX_RETRIES {
                         match self.sender.send(message.clone()) {
                             Ok(_) => {
                                 // Successful send, we're done
                                 if retry_count > 0 {
-                                    tracing::debug!(retries = retry_count, "Successfully broadcast SSE event after retries");
+                                    tracing::debug!(
+                                        retries = retry_count,
+                                        "Successfully broadcast SSE event after retries"
+                                    );
                                 }
                                 return;
                             }
