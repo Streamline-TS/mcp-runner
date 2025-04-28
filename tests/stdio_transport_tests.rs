@@ -25,8 +25,7 @@ impl MockStdio {
     ///
     /// # Arguments
     ///
-    /// * `recv_buffer` - A vector of strings that will be returned in reverse order
-    ///                    when `read_line` is called.
+    /// * `recv_buffer` - A vector of strings that will be returned in reverse order when `read_line` is called.
     ///
     /// # Returns
     ///
