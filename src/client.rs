@@ -153,11 +153,21 @@ pub struct Resource {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct McpClient {
     /// Server name for identification.
     name: String,
     /// Transport implementation for communication.
     transport: Arc<dyn Transport>,
+}
+
+impl std::fmt::Debug for McpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpClient")
+            .field("name", &self.name)
+            .field("transport", &"<dyn Transport>")
+            .finish()
+    }
 }
 
 impl McpClient {

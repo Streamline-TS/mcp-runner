@@ -97,6 +97,8 @@ pub struct McpRunner {
     server_names: HashMap<String, ServerId>,
     /// SSE proxy instance
     sse_proxy: Option<SSEProxy>,
+    /// Cached clients for servers
+    clients: HashMap<ServerId, Option<McpClient>>,
 }
 
 impl McpRunner {
@@ -131,6 +133,7 @@ impl McpRunner {
             servers: HashMap::new(),
             server_names: HashMap::new(),
             sse_proxy: None,
+            clients: HashMap::new(),
         }
     }
 
@@ -302,6 +305,71 @@ impl McpRunner {
         }
     }
 
+    /// Stop all running servers and the SSE proxy if it's running
+    ///
+    /// This method stops all running servers and the SSE proxy (if running).
+    /// It collects all errors but only returns the first one encountered.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or the first error encountered.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     runner.start_all_with_proxy().await;
+    ///     
+    ///     // Later, stop everything
+    ///     runner.stop_all_servers().await?;
+    ///     println!("All servers and proxy stopped");
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub async fn stop_all_servers(&mut self) -> Result<()> {
+        tracing::info!("Stopping all servers and proxy if running");
+
+        // Collect all server IDs first to avoid borrowing issues
+        let server_ids: Vec<ServerId> = self.servers.keys().copied().collect();
+        let mut errors = Vec::new();
+
+        // Stop the SSE proxy first if it's running
+        if self.sse_proxy.is_some() {
+            tracing::info!("Stopping SSE proxy");
+            // Simply remove it - the proxy will be dropped when its background task completes
+            self.sse_proxy = None;
+            tracing::info!("SSE proxy stopped");
+        }
+
+        // Stop all servers
+        tracing::info!(server_count = server_ids.len(), "Stopping all servers");
+        for id in server_ids {
+            match self.stop_server(id).await {
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(server_id = ?id, error = %e, "Failed to stop server");
+                    errors.push(e);
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            tracing::info!("All servers stopped successfully");
+            Ok(())
+        } else {
+            tracing::warn!(error_count = errors.len(), "Some servers failed to stop");
+            Err(errors.remove(0))
+        }
+    }
+
     /// Get server status
     ///
     /// This method is instrumented with `tracing`.
@@ -339,6 +407,25 @@ impl McpRunner {
     #[tracing::instrument(skip(self), fields(server_id = %id))]
     pub fn get_client(&mut self, id: ServerId) -> Result<McpClient> {
         tracing::info!("Getting client for server");
+
+        // First check if we already have a client for this server
+        if let Some(Some(_client)) = self.clients.get(&id) {
+            tracing::debug!("Using cached client");
+            // We can't return a reference to the cached client directly because McpClient doesn't implement Clone
+            // Instead we'll return an error so caller knows to handle the case with specialized methods
+            return Err(Error::Other("Client already exists in cache".to_string()));
+        }
+
+        // Check if we've already tried to get a client but it failed
+        if let Some(None) = self.clients.get(&id) {
+            tracing::warn!("Previously failed to create client for this server");
+            return Err(Error::ServerNotFound(format!(
+                "{:?} (client creation previously failed)",
+                id
+            )));
+        }
+
+        // Create a new client
         let server = self.servers.get_mut(&id).ok_or_else(|| {
             tracing::error!("Client requested for unknown or stopped server");
             Error::ServerNotFound(format!("{:?}", id))
@@ -347,18 +434,32 @@ impl McpRunner {
         tracing::debug!(server_name = %server_name, "Found server process");
 
         tracing::debug!("Taking stdin/stdout from server process");
-        let stdin = server.take_stdin().map_err(|e| {
-            tracing::error!(error = %e, "Failed to take stdin from server");
-            e
-        })?;
-        let stdout = server.take_stdout().map_err(|e| {
-            tracing::error!(error = %e, "Failed to take stdout from server");
-            e
-        })?;
+        let stdin = match server.take_stdin() {
+            Ok(stdin) => stdin,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to take stdin from server");
+                // Mark this server as failed in our clients cache
+                self.clients.insert(id, None);
+                return Err(e);
+            }
+        };
+
+        let stdout = match server.take_stdout() {
+            Ok(stdout) => stdout,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to take stdout from server");
+                // Mark this server as failed in our clients cache
+                self.clients.insert(id, None);
+                return Err(e);
+            }
+        };
 
         tracing::debug!("Creating StdioTransport and McpClient");
         let transport = StdioTransport::new(server_name.clone(), stdin, stdout);
         let client = McpClient::new(server_name, transport);
+
+        // Store the client in our cache
+        self.clients.insert(id, Some(client.clone()));
 
         tracing::info!("Client created successfully");
         Ok(client)
@@ -387,6 +488,7 @@ impl McpRunner {
                 servers: HashMap::new(),
                 server_names: HashMap::new(),
                 sse_proxy: None,
+                clients: HashMap::new(),
             };
 
             // Create and start the proxy
@@ -507,5 +609,225 @@ impl McpRunner {
             tracing::warn!("SSE proxy instance requested but no proxy is running");
             Error::Other("SSE proxy not running".to_string())
         })
+    }
+
+    /// Get status for all running servers
+    ///
+    /// This method returns a HashMap of server names to their current status.
+    /// This is a convenience method that can be called at any time to check on all servers.
+    ///
+    /// # Returns
+    ///
+    /// A `HashMap<String, ServerStatus>` containing the status of all currently running servers.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     runner.start_all_servers().await?;
+    ///     
+    ///     // Check status of all servers
+    ///     let statuses = runner.get_all_server_statuses();
+    ///     for (name, status) in statuses {
+    ///         println!("Server '{}' status: {:?}", name, status);
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_all_server_statuses(&self) -> HashMap<String, ServerStatus> {
+        tracing::debug!("Getting status for all running servers");
+        let mut statuses = HashMap::new();
+
+        for (server_name, server_id) in &self.server_names {
+            if let Some(server) = self.servers.get(server_id) {
+                let status = server.status();
+                statuses.insert(server_name.clone(), status);
+                tracing::trace!(server = %server_name, status = ?status);
+            }
+        }
+
+        tracing::debug!(num_servers = statuses.len(), "Collected server statuses");
+        statuses
+    }
+
+    /// Get a list of available tools for a specific server
+    ///
+    /// This is a convenience method that creates a temporary client to query tools from a server.
+    /// Unlike `get_client().list_tools()`, this method handles all the client creation and cleanup internally.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of tools provided by the specified server.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     runner.start_server("fetch").await?;
+    ///     
+    ///     // Get tools for a specific server
+    ///     let tools = runner.get_server_tools("fetch").await?;
+    ///     for tool in tools {
+    ///         println!("Tool: {} - {}", tool.name, tool.description);
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self), fields(server_name = %name))]
+    pub async fn get_server_tools(&mut self, name: &str) -> Result<Vec<client::Tool>> {
+        tracing::info!("Getting tools for server '{}'", name);
+
+        // Get server ID
+        let server_id = self.get_server_id(name)?;
+
+        // Check if we already have a client for this server
+        let client_from_cache = if let Some(Some(_client)) = self.clients.get(&server_id) {
+            tracing::debug!("Using cached client");
+            true
+        } else {
+            false
+        };
+
+        // Get or create client
+        let result: Result<Vec<client::Tool>> = if client_from_cache {
+            // Use cached client
+            let client = self.clients.get(&server_id).unwrap().as_ref().unwrap();
+
+            // Initialize the client
+            client.initialize().await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to initialize client");
+                e
+            })?;
+
+            // List tools
+            client.list_tools().await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to list tools for server");
+                e
+            })
+        } else {
+            // Create a new client
+            match self.get_client(server_id) {
+                Ok(client) => {
+                    // Initialize the client
+                    client.initialize().await.map_err(|e| {
+                        tracing::error!(error = %e, "Failed to initialize client");
+                        e
+                    })?;
+
+                    // List tools
+                    client.list_tools().await.map_err(|e| {
+                        tracing::error!(error = %e, "Failed to list tools for server");
+                        e
+                    })
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get client");
+                    Err(e)
+                }
+            }
+        };
+
+        match &result {
+            Ok(tools) => {
+                tracing::info!(num_tools = tools.len(), "Successfully retrieved tools");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to get tools");
+            }
+        }
+
+        result
+    }
+
+    /// Get tools for all running servers
+    ///
+    /// This method returns a HashMap of server names to their available tools.
+    /// This is a convenience method that can be called at any time to check tools for all running servers.
+    ///
+    /// # Returns
+    ///
+    /// A `HashMap<String, Result<Vec<Tool>>>` containing the tools of all currently running servers.
+    /// The Result indicates whether listing tools was successful for each server.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     runner.start_all_servers().await?;
+    ///     
+    ///     // Get tools for all servers
+    ///     let all_tools = runner.get_all_server_tools().await;
+    ///     for (server_name, tools_result) in all_tools {
+    ///         match tools_result {
+    ///             Ok(tools) => {
+    ///                 println!("Server '{}' tools:", server_name);
+    ///                 for tool in tools {
+    ///                     println!(" - {}: {}", tool.name, tool.description);
+    ///                 }
+    ///             },
+    ///             Err(e) => println!("Failed to get tools for '{}': {}", server_name, e),
+    ///         }
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_all_server_tools(&mut self) -> HashMap<String, Result<Vec<client::Tool>>> {
+        tracing::debug!("Getting tools for all running servers");
+        let mut all_tools = HashMap::new();
+
+        // Need to collect keys to avoid borrowing issues
+        let server_names: Vec<String> = self.server_names.keys().cloned().collect();
+
+        for server_name in server_names {
+            tracing::debug!(server = %server_name, "Getting tools");
+            // For each server, get its tools with a timeout to prevent hanging
+            // Increase timeout from 5 seconds to 15 seconds for slower servers
+            let tools_result = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                self.get_server_tools(&server_name),
+            )
+            .await;
+
+            // Process the result, handling timeout case separately
+            let final_result = match tools_result {
+                Ok(inner_result) => inner_result,
+                Err(_) => {
+                    tracing::warn!(server = %server_name, "Timed out getting tools");
+                    Err(Error::Timeout("Tool listing timed out".to_string()))
+                }
+            };
+
+            // Store the result (success or error) in the map
+            all_tools.insert(server_name, final_result);
+        }
+
+        tracing::debug!(
+            num_servers = all_tools.len(),
+            "Collected tools for all servers"
+        );
+        all_tools
     }
 }
