@@ -33,8 +33,9 @@ async fn main() -> Result<()> {
         info!("Available HTTP endpoints:");
 
         // Using values from the example config file
-        let host = "127.0.0.1";
-        let port = 8080;
+        let sse_proxy_config = runner.get_sse_proxy_config()?;
+        let host = &sse_proxy_config.address;
+        let port = &sse_proxy_config.port;
 
         info!(
             " - SSE events stream:           GET    http://{}:{}/events",

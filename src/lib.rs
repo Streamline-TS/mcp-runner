@@ -422,4 +422,90 @@ impl McpRunner {
     pub fn is_sse_proxy_configured(&self) -> bool {
         self.config.sse_proxy.is_some()
     }
+
+    /// Get the SSE proxy configuration if it exists
+    ///
+    /// Retrieves a reference to the SSE proxy configuration from the runner's config.
+    /// This is useful for accessing proxy settings like address and port.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a reference to the `SSEProxyConfig` if configured,
+    /// or an `Error::Other` if no SSE proxy is configured.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let runner = McpRunner::from_config_file("config.json")?;
+    ///     
+    ///     if runner.is_sse_proxy_configured() {
+    ///         let proxy_config = runner.get_sse_proxy_config()?;
+    ///         println!("SSE proxy will listen on {}:{}", proxy_config.address, proxy_config.port);
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_sse_proxy_config(&self) -> Result<&config::SSEProxyConfig> {
+        tracing::debug!("Getting SSE proxy configuration");
+        self.config.sse_proxy.as_ref().ok_or_else(|| {
+            tracing::warn!("SSE proxy configuration requested but not configured");
+            Error::Other("SSE proxy not configured".to_string())
+        })
+    }
+
+    /// Get the running SSE proxy instance if it exists
+    ///
+    /// This method provides access to the running SSE proxy instance, which can be used
+    /// for more advanced operations or to get runtime information about the proxy.
+    /// Note that this will only return a value if the proxy was previously started
+    /// with `start_sse_proxy()` or `start_all_with_proxy()`.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a reference to the running `SSEProxy` instance,
+    /// or an `Error::Other` if no SSE proxy is running.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     
+    ///     // Start servers and proxy
+    ///     let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
+    ///     let _server_ids = server_ids?;
+    ///     
+    ///     if proxy_started {
+    ///         // Access the running proxy instance
+    ///         let proxy = runner.get_sse_proxy()?;
+    ///         let config = proxy.config();
+    ///         println!("SSE proxy is running on {}:{}", config.address, config.port);
+    ///         
+    ///         // Could perform additional operations with the proxy instance
+    ///     }
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    pub fn get_sse_proxy(&self) -> Result<&SSEProxy> {
+        tracing::debug!("Getting SSE proxy instance");
+        self.sse_proxy.as_ref().ok_or_else(|| {
+            tracing::warn!("SSE proxy instance requested but no proxy is running");
+            Error::Other("SSE proxy not running".to_string())
+        })
+    }
 }

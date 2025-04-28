@@ -36,7 +36,6 @@ use tracing;
 ///
 /// Provides an HTTP and SSE proxy that allows web clients to interact with MCP servers.
 /// The proxy supports authentication, server listing, tool calls, and resource retrieval.
-/// It uses Server-Sent Events for real-time updates from MCP servers to clients.
 #[derive(Clone)]
 pub struct SSEProxy {
     /// Configuration for the proxy
@@ -1096,5 +1095,40 @@ impl SSEProxy {
 
         // If no authentication is configured, any token is valid
         true
+    }
+
+    /// Get the proxy configuration
+    ///
+    /// Returns a reference to the SSE proxy configuration.
+    /// This is useful for accessing settings like address, port, and authentication options.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the `SSEProxyConfig` containing the proxy settings.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mcp_runner::McpRunner;
+    /// use std::net::SocketAddr;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> mcp_runner::Result<()> {
+    ///     let mut runner = McpRunner::from_config_file("config.json")?;
+    ///     
+    ///     // Start the proxy
+    ///     runner.start_sse_proxy().await?;
+    ///     
+    ///     // Get the proxy instance and its config
+    ///     let proxy = runner.get_sse_proxy()?;
+    ///     let config = proxy.config();
+    ///     
+    ///     println!("Proxy listening on {}:{}", config.address, config.port);
+    ///     
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn config(&self) -> &SSEProxyConfig {
+        &self.config
     }
 }
