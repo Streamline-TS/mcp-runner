@@ -175,6 +175,34 @@ impl McpRunner {
         self.servers.insert(id, server);
         self.server_names.insert(name.to_string(), id);
 
+        // Notify SSE proxy about the new server if it's running
+        if let Some(proxy) = &self.sse_proxy {
+            let status = format!("{:?}", ServerStatus::Running);
+            match proxy.update_server_info(name, Some(id), &status).await {
+                true => {
+                    tracing::debug!(server = %name, "Updated SSE proxy with new server information")
+                }
+                false => {
+                    // If the server wasn't in the proxy cache yet, add it
+                    let server_info = proxy::types::ServerInfo {
+                        name: name.to_string(),
+                        id: format!("{:?}", id),
+                        status: status.clone(),
+                    };
+
+                    // Try to add the server information to the proxy
+                    if proxy.add_server_info(name, server_info.clone()).await {
+                        tracing::debug!(server = %name, "Added new server to SSE proxy cache");
+
+                        // Send a status update event to notify clients
+                        proxy.send_status_update(id, name, &status);
+                    } else {
+                        tracing::debug!(server = %name, "Failed to add server to SSE proxy cache");
+                    }
+                }
+            }
+        }
+
         tracing::info!(server_id = %id, "Server started successfully");
         Ok(id)
     }
@@ -317,6 +345,18 @@ impl McpRunner {
                 tracing::error!(error = %e, "Failed to stop server process");
                 e
             })?;
+
+            // Notify SSE proxy about the server being stopped
+            if let Some(proxy) = &self.sse_proxy {
+                match proxy.update_server_info(&name, None, "Stopped").await {
+                    true => {
+                        tracing::debug!(server = %name, "Updated SSE proxy with server stopped status")
+                    }
+                    false => {
+                        tracing::debug!(server = %name, "SSE proxy not updated (server not in proxy cache)")
+                    }
+                }
+            }
 
             tracing::info!("Server stopped successfully");
             Ok(())
@@ -519,13 +559,16 @@ impl McpRunner {
 
             tracing::info!(address = %address, "Configured SSE proxy address");
 
-            // Instead of creating a full McpRunner clone, create a minimal config clone
-            // that contains only what the proxy needs
-            let config_for_proxy = self.config.clone();
+            // Create a snapshot of the current server information to share with the proxy
+            let server_info = self.get_server_info_snapshot();
 
-            // Create and start the proxy with just the configuration it needs,
-            // instead of a full runner clone
-            let proxy = SSEProxy::new_with_config(config_for_proxy, proxy_config.clone(), address);
+            // Create and start the proxy with the configuration and server information
+            let proxy = SSEProxy::new_with_server_info(
+                self.config.clone(),
+                proxy_config.clone(),
+                address,
+                server_info,
+            );
 
             // Store the proxy instance
             self.sse_proxy = Some(proxy.clone());
@@ -867,5 +910,34 @@ impl McpRunner {
             "Collected tools for all servers"
         );
         all_tools
+    }
+
+    /// Create a snapshot of current server information
+    ///
+    /// This creates a HashMap of server names to their ServerInfo which can be used
+    /// by the SSE proxy to report accurate server status information.
+    ///
+    /// This method is instrumented with `tracing`.
+    #[tracing::instrument(skip(self))]
+    fn get_server_info_snapshot(&self) -> HashMap<String, proxy::types::ServerInfo> {
+        tracing::debug!("Creating server information snapshot for SSE proxy");
+        let mut server_info = HashMap::new();
+
+        for (name, id) in &self.server_names {
+            if let Some(server) = self.servers.get(id) {
+                let status = server.status();
+                server_info.insert(
+                    name.clone(),
+                    proxy::types::ServerInfo {
+                        name: name.clone(),
+                        id: format!("{:?}", id),
+                        status: format!("{:?}", status),
+                    },
+                );
+                tracing::trace!(server = %name, status = ?status, "Added server to snapshot");
+            }
+        }
+
+        server_info
     }
 }

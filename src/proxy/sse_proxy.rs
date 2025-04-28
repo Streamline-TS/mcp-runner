@@ -46,6 +46,8 @@ pub struct SSEProxy {
     event_manager: Arc<EventManager>,
     /// Server address
     address: SocketAddr,
+    /// Server information cache (shared via Arc)
+    server_info: Arc<Mutex<HashMap<String, ServerInfo>>>,
 }
 
 impl SSEProxy {
@@ -66,6 +68,7 @@ impl SSEProxy {
             runner: Arc::new(Mutex::new(runner)),
             event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
             address,
+            server_info: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -96,6 +99,40 @@ impl SSEProxy {
             runner: Arc::new(Mutex::new(runner)),
             event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
             address,
+            server_info: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Create a new SSE proxy with server information
+    ///
+    /// This constructor accepts pre-populated server information to ensure
+    /// the proxy has access to accurate server status data.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Global configuration for all MCP servers
+    /// * `proxy_config` - Configuration for the SSE proxy
+    /// * `address` - Socket address to bind the proxy server to
+    /// * `server_info` - HashMap containing server information with current status
+    ///
+    /// # Returns
+    ///
+    /// A new `SSEProxy` instance
+    pub fn new_with_server_info(
+        config: crate::Config,
+        proxy_config: SSEProxyConfig,
+        address: SocketAddr,
+        server_info: HashMap<String, crate::proxy::types::ServerInfo>,
+    ) -> Self {
+        // Create a minimal runner with just the configuration
+        let runner = McpRunner::new(config);
+
+        Self {
+            config: proxy_config,
+            runner: Arc::new(Mutex::new(runner)),
+            event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
+            address,
+            server_info: Arc::new(Mutex::new(server_info)),
         }
     }
 
@@ -663,36 +700,48 @@ impl SSEProxy {
     ) -> Result<()> {
         tracing::debug!("Handling list servers request");
 
-        // Get a lock on the runner
+        // Get a lock on both the runner and the server info cache
         let runner = proxy.runner.lock().await;
+        let server_info_cache = proxy.server_info.lock().await;
         let mut servers = Vec::new();
 
-        // Collect information about all servers in the config
-        for name in runner.config.mcp_servers.keys() {
-            let server_info = match runner.get_server_id(name) {
-                Ok(id) => {
-                    let status = match runner.server_status(id) {
-                        Ok(s) => format!("{:?}", s),
-                        Err(_) => "Unknown".to_string(),
-                    };
+        // First check if we have any cached server info
+        if !server_info_cache.is_empty() {
+            tracing::debug!("Using cached server information for /servers endpoint");
+            // Use the cached info directly
+            for (_, info) in server_info_cache.iter() {
+                servers.push(info.clone());
+            }
+        } else {
+            tracing::debug!("No cached server info available, using config-only information");
+            // Fall back to the original behavior if no cache is available
+            // Collect information about all servers in the config
+            for name in runner.config.mcp_servers.keys() {
+                let server_info = match runner.get_server_id(name) {
+                    Ok(id) => {
+                        let status = match runner.server_status(id) {
+                            Ok(s) => format!("{:?}", s),
+                            Err(_) => "Unknown".to_string(),
+                        };
 
-                    ServerInfo {
-                        name: name.clone(),
-                        id: format!("{:?}", id),
-                        status,
+                        ServerInfo {
+                            name: name.clone(),
+                            id: format!("{:?}", id),
+                            status,
+                        }
                     }
-                }
-                Err(_) => {
-                    // Server not started yet
-                    ServerInfo {
-                        name: name.clone(),
-                        id: "not_started".to_string(),
-                        status: "Stopped".to_string(),
+                    Err(_) => {
+                        // Server not started yet
+                        ServerInfo {
+                            name: name.clone(),
+                            id: "not_started".to_string(),
+                            status: "Stopped".to_string(),
+                        }
                     }
-                }
-            };
+                };
 
-            servers.push(server_info);
+                servers.push(server_info);
+            }
         }
 
         // Convert to JSON
@@ -1160,5 +1209,98 @@ impl SSEProxy {
     /// ```
     pub fn config(&self) -> &SSEProxyConfig {
         &self.config
+    }
+
+    /// Update the status of a server in the proxy's cache
+    ///
+    /// This method updates the cached server information when a server's status changes.
+    /// It's used by the runner to keep the proxy in sync with server state changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_name` - Name of the server whose status has changed
+    /// * `server_id` - ID of the server, or None if the server was removed
+    /// * `status` - New status of the server, or "Stopped" if the server was removed
+    ///
+    /// # Returns
+    ///
+    /// `true` if the server info was updated, `false` if the server wasn't found in the cache
+    pub async fn update_server_info(
+        &self,
+        server_name: &str,
+        server_id: Option<ServerId>,
+        status: &str,
+    ) -> bool {
+        let mut server_info_cache = self.server_info.lock().await;
+
+        if let Some(info) = server_info_cache.get_mut(server_name) {
+            if let Some(id) = server_id {
+                // Update with new information
+                info.id = format!("{:?}", id);
+                info.status = status.to_string();
+                tracing::debug!(
+                    server = %server_name,
+                    server_id = ?id,
+                    status = %status,
+                    "Updated server info in SSE proxy cache"
+                );
+            } else {
+                // Server was removed or stopped
+                info.id = "not_running".to_string();
+                info.status = "Stopped".to_string();
+                tracing::debug!(
+                    server = %server_name,
+                    "Marked server as stopped in SSE proxy cache"
+                );
+            }
+
+            // Send a status update event to clients
+            self.send_status_update(server_id.unwrap_or_else(ServerId::new), server_name, status);
+
+            true
+        } else {
+            tracing::warn!(
+                server = %server_name,
+                "Attempted to update server info in SSE proxy cache, but server not found"
+            );
+            false
+        }
+    }
+
+    /// Add a new server to the proxy's cache
+    ///
+    /// This method adds new server information to the proxy's cache when a server is started
+    /// after the proxy is already running.
+    ///
+    /// # Arguments
+    ///
+    /// * `server_name` - Name of the server to add
+    /// * `server_info` - ServerInfo structure with details about the server
+    ///
+    /// # Returns
+    ///
+    /// `true` if the server info was added, `false` if it already existed
+    pub async fn add_server_info(
+        &self,
+        server_name: &str,
+        server_info: crate::proxy::types::ServerInfo,
+    ) -> bool {
+        let mut server_info_cache = self.server_info.lock().await;
+
+        if server_info_cache.contains_key(server_name) {
+            tracing::warn!(
+                server = %server_name,
+                "Attempted to add server to SSE proxy cache, but server already exists"
+            );
+            false
+        } else {
+            // Add the new server info
+            server_info_cache.insert(server_name.to_string(), server_info);
+            tracing::info!(
+                server = %server_name,
+                "Added new server to SSE proxy cache"
+            );
+            true
+        }
     }
 }
