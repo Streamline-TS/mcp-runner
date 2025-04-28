@@ -116,7 +116,7 @@ pub struct SSEProxyConfig {
     ///
     /// When specified, only servers in this list can be accessed through the proxy.
     /// If `None`, all servers defined in the configuration are accessible.
-    #[serde(default)]
+    #[serde(default, rename = "allowedServers")]
     pub allowed_servers: Option<Vec<String>>,
 
     /// Authentication configuration for securing the proxy

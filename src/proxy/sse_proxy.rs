@@ -698,25 +698,66 @@ impl SSEProxy {
         writer: &mut tokio::io::WriteHalf<TcpStream>,
         proxy: SSEProxy,
     ) -> Result<()> {
-        tracing::debug!("Handling list servers request");
+        tracing::info!("Handling list servers request");
+
+        // Debug the entire proxy config structure
+        if let Ok(config_json) = serde_json::to_string(&proxy.config) {
+            tracing::info!("Full proxy config: {}", config_json);
+        } else {
+            tracing::warn!("Unable to serialize proxy config for debugging");
+        }
 
         // Get a lock on both the runner and the server info cache
         let runner = proxy.runner.lock().await;
         let server_info_cache = proxy.server_info.lock().await;
         let mut servers = Vec::new();
 
+        // Log allowed servers configuration
+        if let Some(allowed_servers) = &proxy.config.allowed_servers {
+            tracing::info!("Allowed servers configured: {:?}", allowed_servers);
+        } else {
+            tracing::info!("No allowed servers list configured - all servers will be visible");
+        }
+
         // First check if we have any cached server info
         if !server_info_cache.is_empty() {
-            tracing::debug!("Using cached server information for /servers endpoint");
+            tracing::info!("Using cached server information for /servers endpoint");
+            // Log all servers in cache
+            tracing::info!(
+                "Servers in cache: {:?}",
+                server_info_cache.keys().collect::<Vec<_>>()
+            );
+
             // Use the cached info directly
-            for (_, info) in server_info_cache.iter() {
+            for (name, info) in server_info_cache.iter() {
+                // Check if this server is in the allowed list (if we have one)
+                if let Some(allowed_servers) = &proxy.config.allowed_servers {
+                    if !allowed_servers.contains(name) {
+                        tracing::info!(server = %name, "Server '{}' not in allowed list, excluding from response", name);
+                        continue;
+                    }
+                    tracing::info!(server = %name, "Server '{}' is in allowed list, including in response", name);
+                }
                 servers.push(info.clone());
             }
         } else {
-            tracing::debug!("No cached server info available, using config-only information");
+            tracing::info!("No cached server info available, using config-only information");
+            // Log all servers in config
+            let config_servers = runner.config.mcp_servers.keys().collect::<Vec<_>>();
+            tracing::info!("Servers in config: {:?}", config_servers);
+
             // Fall back to the original behavior if no cache is available
             // Collect information about all servers in the config
             for name in runner.config.mcp_servers.keys() {
+                // Check if this server is in the allowed list (if we have one)
+                if let Some(allowed_servers) = &proxy.config.allowed_servers {
+                    if !allowed_servers.contains(name) {
+                        tracing::info!(server = %name, "Server '{}' not in allowed list, excluding from response", name);
+                        continue;
+                    }
+                    tracing::info!(server = %name, "Server '{}' is in allowed list, including in response", name);
+                }
+
                 let server_info = match runner.get_server_id(name) {
                     Ok(id) => {
                         let status = match runner.server_status(id) {
@@ -743,6 +784,12 @@ impl SSEProxy {
                 servers.push(server_info);
             }
         }
+
+        tracing::info!(
+            "Returning list of {} servers: {:?}",
+            servers.len(),
+            servers.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
 
         // Convert to JSON
         let json = serde_json::to_string(&servers)

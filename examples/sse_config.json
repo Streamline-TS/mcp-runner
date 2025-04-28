@@ -1,6 +1,6 @@
 {
     "sseProxy": {
-        "allowedServers": ["uvx", "mcp-server-fetch"],
+        "allowedServers": ["blahblah", "fetch"],
         "authenticate": {
             "bearer": {
                 "token": "your token"
