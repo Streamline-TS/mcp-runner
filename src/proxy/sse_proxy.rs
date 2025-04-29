@@ -26,6 +26,7 @@ use crate::transport::json_rpc::{JsonRpcRequest, JsonRpcResponse};
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
@@ -57,12 +58,22 @@ impl SSEProxy {
     ///
     /// * `runner` - MCP runner instance for communicating with MCP servers
     /// * `config` - Configuration for the SSE proxy
-    /// * `address` - Socket address to bind the proxy server to
     ///
     /// # Returns
     ///
     /// A new `SSEProxy` instance
-    pub fn new(runner: McpRunner, config: SSEProxyConfig, address: SocketAddr) -> Self {
+    pub fn new(runner: McpRunner, config: SSEProxyConfig) -> Self {
+        // Create socket address from config
+        let address = match SocketAddr::from_str(&format!("{}:{}", config.address, config.port)) {
+            Ok(addr) => addr,
+            Err(e) => {
+                // Log the error but fallback to a default address to avoid panicking
+                tracing::error!(error = %e, "Failed to create socket address from config, using fallback address");
+                SocketAddr::from_str("127.0.0.1:3000")
+                    .expect("Hardcoded fallback address should be valid")
+            }
+        };
+
         Self {
             config,
             runner: Arc::new(Mutex::new(runner)),
@@ -81,18 +92,27 @@ impl SSEProxy {
     ///
     /// * `config` - Global configuration for all MCP servers
     /// * `proxy_config` - Configuration for the SSE proxy
-    /// * `address` - Socket address to bind the proxy server to
     ///
     /// # Returns
     ///
     /// A new `SSEProxy` instance
-    pub fn new_with_config(
-        config: crate::Config,
-        proxy_config: SSEProxyConfig,
-        address: SocketAddr,
-    ) -> Self {
+    pub fn new_with_config(config: crate::Config, proxy_config: SSEProxyConfig) -> Self {
         // Create a minimal runner with just the configuration
         let runner = McpRunner::new(config);
+
+        // Create socket address from proxy_config
+        let address = match SocketAddr::from_str(&format!(
+            "{}:{}",
+            proxy_config.address, proxy_config.port
+        )) {
+            Ok(addr) => addr,
+            Err(e) => {
+                // Log the error but fallback to a default address to avoid panicking
+                tracing::error!(error = %e, "Failed to create socket address from config, using fallback address");
+                SocketAddr::from_str("127.0.0.1:3000")
+                    .expect("Hardcoded fallback address should be valid")
+            }
+        };
 
         Self {
             config: proxy_config,
@@ -112,7 +132,6 @@ impl SSEProxy {
     ///
     /// * `config` - Global configuration for all MCP servers
     /// * `proxy_config` - Configuration for the SSE proxy
-    /// * `address` - Socket address to bind the proxy server to
     /// * `server_info` - HashMap containing server information with current status
     ///
     /// # Returns
@@ -121,11 +140,24 @@ impl SSEProxy {
     pub fn new_with_server_info(
         config: crate::Config,
         proxy_config: SSEProxyConfig,
-        address: SocketAddr,
         server_info: HashMap<String, crate::proxy::types::ServerInfo>,
     ) -> Self {
         // Create a minimal runner with just the configuration
         let runner = McpRunner::new(config);
+
+        // Create socket address from proxy_config
+        let address = match SocketAddr::from_str(&format!(
+            "{}:{}",
+            proxy_config.address, proxy_config.port
+        )) {
+            Ok(addr) => addr,
+            Err(e) => {
+                // Log the error but fallback to a default address to avoid panicking
+                tracing::error!(error = %e, "Failed to create socket address from config, using fallback address");
+                SocketAddr::from_str("127.0.0.1:3000")
+                    .expect("Hardcoded fallback address should be valid")
+            }
+        };
 
         Self {
             config: proxy_config,

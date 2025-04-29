@@ -79,7 +79,6 @@ pub use proxy::SSEProxy;
 pub use server::{ServerId, ServerProcess, ServerStatus};
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::Path;
 use transport::StdioTransport;
 
@@ -550,23 +549,13 @@ impl McpRunner {
         if let Some(proxy_config) = &self.config.sse_proxy {
             tracing::info!("Initializing SSE proxy server");
 
-            // Parse the address from config
-            let addr_str = format!("{}:{}", proxy_config.address, proxy_config.port);
-            let address: SocketAddr = addr_str.parse().map_err(|e| {
-                tracing::error!(error = %e, address = %addr_str, "Failed to parse SSE proxy address");
-                Error::ConfigInvalid(format!("Invalid SSE proxy address {}: {}", addr_str, e))
-            })?;
-
-            tracing::info!(address = %address, "Configured SSE proxy address");
-
-            // Create a snapshot of the current server information to share with the proxy
+            // Get server info snapshot for more accurate initial status reporting
             let server_info = self.get_server_info_snapshot();
 
-            // Create and start the proxy with the configuration and server information
+            // Create proxy using simplified constructor (no separate address parameter)
             let proxy = SSEProxy::new_with_server_info(
                 self.config.clone(),
                 proxy_config.clone(),
-                address,
                 server_info,
             );
 
@@ -583,7 +572,11 @@ impl McpRunner {
                 }
             });
 
-            tracing::info!("SSE proxy server started on {}", address);
+            tracing::info!(
+                "SSE proxy server started on {}:{}",
+                proxy_config.address,
+                proxy_config.port
+            );
             Ok(())
         } else {
             tracing::warn!("SSE proxy not configured, skipping start");

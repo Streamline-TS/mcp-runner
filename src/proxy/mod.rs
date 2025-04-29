@@ -14,14 +14,13 @@
 //! ```no_run
 //! use mcp_runner::{McpRunner, config::SSEProxyConfig};
 //! use mcp_runner::proxy::SSEProxy;
-//! use std::net::SocketAddr;
 //! use std::str::FromStr;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a runner
 //! let runner = McpRunner::from_config_file("config.json")?;
 //!
-//! // Create proxy configuration
+//! // If the config file does not include "sseProxy", you can create it manually
 //! let proxy_config = SSEProxyConfig {
 //!     authenticate: None,
 //!     allowed_servers: None,
@@ -29,11 +28,9 @@
 //!     port: 8080,
 //! };
 //!
-//! // Create socket address to listen on
-//! let addr = SocketAddr::from_str("127.0.0.1:8080")?;
-//!
 //! // Create and start the SSE proxy
-//! let proxy = SSEProxy::new(runner, proxy_config, addr);
+//! // The address is automatically derived from the proxy_config
+//! let proxy = SSEProxy::new(runner, proxy_config);
 //! proxy.start().await?;
 //! # Ok(())
 //! # }
