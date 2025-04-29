@@ -6,6 +6,7 @@
 
 use crate::Error;
 use crate::error::Result;
+use crate::proxy::error_helpers;
 use crate::proxy::http::HttpResponse;
 use crate::proxy::sse_proxy::SSEProxy;
 use crate::proxy::types::{ResourceInfo, ToolInfo};
@@ -39,49 +40,12 @@ impl HttpHandlers {
         let req: JsonRpcRequest = match serde_json::from_slice(body) {
             Ok(r) => r,
             Err(e) => {
-                let resp = JsonRpcResponse::error(
-                    serde_json::json!(null),
-                    -32700, // Parse error
-                    format!("Parse error: {}", e),
-                    None,
-                );
-                // Use HttpResponse helper for error
-                match serde_json::to_string(&resp) {
-                    Ok(json) => return HttpResponse::send_json_response(writer, &json).await, // Send as 200 OK with JSON error body
-                    Err(serialize_err) => {
-                        tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                        // Fallback to generic 500 if serialization fails
-                        return HttpResponse::send_error_response(
-                            writer,
-                            500,
-                            "Internal server error during error reporting",
-                        )
-                        .await;
-                    }
-                }
+                return error_helpers::send_parse_error(writer, &e).await;
             }
         };
 
         if req.method != "initialize" {
-            let resp = JsonRpcResponse::error(
-                req.id,
-                -32601, // Method not found
-                "Method not found (expected 'initialize')",
-                None,
-            );
-            // Use HttpResponse helper for error
-            match serde_json::to_string(&resp) {
-                Ok(json) => return HttpResponse::send_json_response(writer, &json).await, // Send as 200 OK with JSON error body
-                Err(serialize_err) => {
-                    tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                    return HttpResponse::send_error_response(
-                        writer,
-                        500,
-                        "Internal server error during error reporting",
-                    )
-                    .await;
-                }
-            }
+            return error_helpers::send_method_not_found(writer, req.id, "initialize").await;
         }
 
         // Respond with protocol version and capabilities
@@ -133,103 +97,42 @@ impl HttpHandlers {
         let req: JsonRpcRequest = match serde_json::from_slice(body) {
             Ok(r) => r,
             Err(e) => {
-                let resp = JsonRpcResponse::error(
-                    serde_json::json!(null),
-                    -32700, // Parse error
-                    format!("Parse error: {}", e),
-                    None,
-                );
-                // Use HttpResponse helper for error
-                match serde_json::to_string(&resp) {
-                    Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
-                    Err(serialize_err) => {
-                        tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                        return HttpResponse::send_error_response(
-                            writer,
-                            500,
-                            "Internal server error during error reporting",
-                        )
-                        .await;
-                    }
-                }
+                return error_helpers::send_parse_error(writer, &e).await;
             }
         };
 
         if req.method != "tools/call" {
-            let resp = JsonRpcResponse::error(
-                req.id.clone(), // Clone id for error response
-                -32601,         // Method not found
-                "Method not found (expected 'tools/call')",
-                None,
-            );
-            // Use HttpResponse helper for error
-            match serde_json::to_string(&resp) {
-                Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
-                Err(serialize_err) => {
-                    tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                    return HttpResponse::send_error_response(
-                        writer,
-                        500,
-                        "Internal server error during error reporting",
-                    )
-                    .await;
-                }
-            }
+            return error_helpers::send_method_not_found(writer, req.id.clone(), "tools/call")
+                .await;
         }
 
         // Extract params
         let (server, tool, args) = match &req.params {
             Some(params) => {
-                // Improved parameter validation with explicit error handling
-                let server = match params.get("server").and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
+                // Use the parameter validation helper
+                let server = match error_helpers::get_string_param(params, "server") {
+                    Some(s) => s,
                     None => {
-                        let resp = JsonRpcResponse::error(
+                        return error_helpers::send_invalid_param(
+                            writer,
                             req.id.clone(),
-                            -32602, // Invalid params
-                            "Invalid 'server' parameter: must be a string",
-                            None,
-                        );
-                        match serde_json::to_string(&resp) {
-                            Ok(json) => {
-                                return HttpResponse::send_json_response(writer, &json).await;
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                                return HttpResponse::send_error_response(
-                                    writer,
-                                    500,
-                                    "Internal server error during error reporting",
-                                )
-                                .await;
-                            }
-                        }
+                            "server",
+                            "must be a string",
+                        )
+                        .await;
                     }
                 };
 
-                let tool = match params.get("tool").and_then(|v| v.as_str()) {
-                    Some(t) => t.to_string(),
+                let tool = match error_helpers::get_string_param(params, "tool") {
+                    Some(t) => t,
                     None => {
-                        let resp = JsonRpcResponse::error(
+                        return error_helpers::send_invalid_param(
+                            writer,
                             req.id.clone(),
-                            -32602, // Invalid params
-                            "Invalid 'tool' parameter: must be a string",
-                            None,
-                        );
-                        match serde_json::to_string(&resp) {
-                            Ok(json) => {
-                                return HttpResponse::send_json_response(writer, &json).await;
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                                return HttpResponse::send_error_response(
-                                    writer,
-                                    500,
-                                    "Internal server error during error reporting",
-                                )
-                                .await;
-                            }
-                        }
+                            "tool",
+                            "must be a string",
+                        )
+                        .await;
                     }
                 };
 
@@ -240,73 +143,36 @@ impl HttpHandlers {
                 (server, tool, args)
             }
             None => {
-                let resp = JsonRpcResponse::error(
-                    req.id.clone(),
-                    -32602, // Invalid params
-                    "Missing required parameters",
-                    None,
-                );
-                match serde_json::to_string(&resp) {
-                    Ok(json) => return HttpResponse::send_json_response(writer, &json).await,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
-                        return HttpResponse::send_error_response(
-                            writer,
-                            500,
-                            "Internal server error during error reporting",
-                        )
-                        .await;
-                    }
-                }
+                return error_helpers::send_missing_params(writer, req.id.clone()).await;
             }
         };
 
         // Call the tool and respond
         let request_id_str = req.id.to_string(); // Convert JsonRpcId to string for process_tool_call
-        let result = proxy
+        match proxy
             .process_tool_call(&server, &tool, args, &request_id_str)
-            .await;
-
-        match result {
+            .await
+        {
             Ok(_) => {
                 // Send success response (tool result is sent via SSE)
                 let resp = JsonRpcResponse::success(
-                    req.id,
+                    req.id.clone(),
                     serde_json::json!({ "status": "accepted", "request_id": request_id_str }),
                 );
                 match serde_json::to_string(&resp) {
                     Ok(json) => HttpResponse::send_json_response(writer, &json).await,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to serialize JSON-RPC success response");
-                        HttpResponse::send_error_response(
-                            writer,
-                            500,
-                            "Internal server error during response serialization",
-                        )
-                        .await
-                    }
+                    Err(e) => error_helpers::send_internal_error(writer, req.id.clone(), e).await,
                 }
             }
             Err(e) => {
-                // Send error response
-                let resp = JsonRpcResponse::error(
+                error_helpers::send_jsonrpc_error(
+                    writer,
                     req.id,
                     -32000, // Server error
-                    format!("Tool call failed: {}", e),
-                    None, // No additional data for this error
-                );
-                match serde_json::to_string(&resp) {
-                    Ok(json) => HttpResponse::send_json_response(writer, &json).await, // Send as 200 OK with JSON error body
-                    Err(serialize_err) => {
-                        tracing::error!(error = %serialize_err, "Failed to serialize JSON-RPC error response");
-                        HttpResponse::send_error_response(
-                            writer,
-                            500,
-                            "Internal server error during error reporting",
-                        )
-                        .await
-                    }
-                }
+                    &format!("Tool call failed: {}", e),
+                    None,
+                )
+                .await
             }
         }
     }
