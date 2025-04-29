@@ -155,6 +155,14 @@ async fn main() -> Result<()> {
         // Extract server names
         let server_names = vec!["fetch".to_string(), "filesystem".to_string()];
 
+        // Make sure all servers are properly registered before starting the proxy
+        for name in &server_names {
+            if let Ok(server_id) = runner.get_server_id(name) {
+                let status = runner.server_status(server_id)?;
+                info!("Server '{}' status: {:?}", name, status);
+            }
+        }
+
         // Start the SSE proxy server - now using address and port from config
         info!("Starting SSE proxy with settings from config file");
         runner.start_sse_proxy().await?;

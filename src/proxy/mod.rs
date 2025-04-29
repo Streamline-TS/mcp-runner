@@ -12,10 +12,11 @@
 //! # Examples
 //!
 //! ```no_run
-//! use mcp_runner::{McpRunner, config::SSEProxyConfig};
-//! use mcp_runner::proxy::SSEProxy;
+//! use mcp_runner::{McpRunner, config::SSEProxyConfig, error::Result};
+//! use mcp_runner::proxy::{SSEProxy, sse_proxy::SSEProxyRunnerAccess};
+//! use std::sync::{Arc, Mutex};
 //!
-//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn run() -> Result<()> {
 //! // Create a runner
 //! let runner = McpRunner::from_config_file("config.json")?;
 //!
@@ -27,11 +28,32 @@
 //!     port: 8080,
 //! };
 //!
-//! // Create and start the SSE proxy
-//! // The address is automatically derived from the proxy_config
-//! // The proxy will get server information directly from the runner
-//! let proxy = SSEProxy::new(runner, proxy_config);
-//! proxy.start().await?;
+//! // Use Arc<Mutex<>> to allow shared mutable access to runner
+//! let runner_mutex = Arc::new(Mutex::new(runner));
+//! let runner_clone1 = Arc::clone(&runner_mutex);
+//! let runner_clone2 = Arc::clone(&runner_mutex);
+//! let allowed_servers = proxy_config.allowed_servers.clone();
+//!
+//! // Create the access functions for SSEProxy
+//! let runner_access = SSEProxyRunnerAccess {
+//!     get_server_id: Arc::new(move |name| {
+//!         runner_clone1.lock().unwrap().get_server_id(name)
+//!     }),
+//!     get_client: Arc::new(move |id| {
+//!         runner_clone2.lock().unwrap().get_client(id)
+//!     }),
+//!     get_allowed_servers: Arc::new(move || allowed_servers.clone()),
+//!     get_server_config_keys: Arc::new(|| {
+//!         // In a real application, you would use appropriate methods to get server names
+//!         vec!["server1".to_string(), "server2".to_string()]
+//!     }),
+//! };
+//!
+//! // Start the SSE proxy
+//! let proxy_handle = SSEProxy::start_proxy(runner_access, proxy_config).await?;
+//!
+//! // Later when you want to shut down the proxy:
+//! // proxy_handle.shutdown().await?;
 //! # Ok(())
 //! # }
 //! ```

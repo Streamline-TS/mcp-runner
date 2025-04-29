@@ -75,12 +75,16 @@ pub mod transport;
 pub use client::McpClient; // Re-export McpClient as public
 pub use config::Config;
 pub use error::{Error, Result};
-pub use proxy::SSEProxy;
+pub use proxy::sse_proxy::SSEProxyHandle; // Update to use SSEProxyHandle
 pub use server::{ServerId, ServerProcess, ServerStatus};
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use transport::StdioTransport;
+
+use proxy::sse_proxy::{SSEProxy, SSEProxyRunnerAccess}; // Import the new types
+use proxy::types::ServerInfo;
 
 /// Configure and run MCP servers
 ///
@@ -94,8 +98,8 @@ pub struct McpRunner {
     servers: HashMap<ServerId, ServerProcess>,
     /// Map of server names to server IDs
     server_names: HashMap<String, ServerId>,
-    /// SSE proxy instance
-    sse_proxy: Option<SSEProxy>,
+    /// SSE proxy handle (if running)
+    sse_proxy_handle: Option<SSEProxyHandle>,
     /// Cached clients for servers
     clients: HashMap<ServerId, Option<McpClient>>,
 }
@@ -131,7 +135,7 @@ impl McpRunner {
             config,
             servers: HashMap::new(),
             server_names: HashMap::new(),
-            sse_proxy: None,
+            sse_proxy_handle: None,
             clients: HashMap::new(),
         }
     }
@@ -175,30 +179,34 @@ impl McpRunner {
         self.server_names.insert(name.to_string(), id);
 
         // Notify SSE proxy about the new server if it's running
-        if let Some(proxy) = &self.sse_proxy {
+        if let Some(proxy) = &self.sse_proxy_handle {
             let status = format!("{:?}", ServerStatus::Running);
-            match proxy.update_server_info(name, Some(id), &status).await {
-                true => {
-                    tracing::debug!(server = %name, "Updated SSE proxy with new server information")
-                }
-                false => {
-                    // If the server wasn't in the proxy cache yet, add it
-                    let server_info = proxy::types::ServerInfo {
-                        name: name.to_string(),
-                        id: format!("{:?}", id),
-                        status: status.clone(),
-                    };
+            if let Err(e) = proxy.update_server_info(name, Some(id), &status).await {
+                tracing::warn!(
+                    error = %e,
+                    server = %name,
+                    "Failed to update server info in SSE proxy"
+                );
 
-                    // Try to add the server information to the proxy
-                    if proxy.add_server_info(name, server_info.clone()).await {
-                        tracing::debug!(server = %name, "Added new server to SSE proxy cache");
+                // If the server wasn't in the proxy cache yet, try to add it
+                let server_info = ServerInfo {
+                    name: name.to_string(),
+                    id: format!("{:?}", id),
+                    status: status.clone(),
+                };
 
-                        // Send a status update event to notify clients
-                        proxy.send_status_update(id, name, &status);
-                    } else {
-                        tracing::debug!(server = %name, "Failed to add server to SSE proxy cache");
-                    }
+                // Try to add the server information to the proxy
+                if let Err(e) = proxy.add_server_info(name, server_info.clone()).await {
+                    tracing::warn!(
+                        error = %e,
+                        server = %name,
+                        "Failed to add server to SSE proxy cache"
+                    );
+                } else {
+                    tracing::debug!(server = %name, "Added new server to SSE proxy cache");
                 }
+            } else {
+                tracing::debug!(server = %name, "Updated SSE proxy with new server information");
             }
         }
 
@@ -346,14 +354,15 @@ impl McpRunner {
             })?;
 
             // Notify SSE proxy about the server being stopped
-            if let Some(proxy) = &self.sse_proxy {
-                match proxy.update_server_info(&name, None, "Stopped").await {
-                    true => {
-                        tracing::debug!(server = %name, "Updated SSE proxy with server stopped status")
-                    }
-                    false => {
-                        tracing::debug!(server = %name, "SSE proxy not updated (server not in proxy cache)")
-                    }
+            if let Some(proxy) = &self.sse_proxy_handle {
+                if let Err(e) = proxy.update_server_info(&name, None, "Stopped").await {
+                    tracing::warn!(
+                        error = %e,
+                        server = %name,
+                        "Failed to update SSE proxy with server stopped status"
+                    );
+                } else {
+                    tracing::debug!(server = %name, "Updated SSE proxy with server stopped status");
                 }
             }
 
@@ -401,10 +410,12 @@ impl McpRunner {
         let server_ids: Vec<ServerId> = self.servers.keys().copied().collect();
 
         // Stop the SSE proxy first if it's running
-        if self.sse_proxy.is_some() {
+        if let Some(proxy_handle) = self.sse_proxy_handle.take() {
             tracing::info!("Stopping SSE proxy");
-            // Simply remove it - the proxy will be dropped when its background task completes
-            self.sse_proxy = None;
+            if let Err(e) = proxy_handle.shutdown().await {
+                tracing::warn!(error = %e, "Error shutting down SSE proxy");
+                // We continue anyway since we're in the process of clean-up
+            }
             tracing::info!("SSE proxy stopped");
         }
 
@@ -549,25 +560,62 @@ impl McpRunner {
         if let Some(proxy_config) = &self.config.sse_proxy {
             tracing::info!("Initializing SSE proxy server");
 
-            // Create a new McpRunner for the proxy to use (with the same config)
-            let new_runner = McpRunner::new(self.config.clone());
+            // Create the runner access functions
+            let runner_access = SSEProxyRunnerAccess {
+                get_server_id: Arc::new({
+                    let self_clone = self.clone(); // Clone self to move into the closure
+                    move |name: &str| self_clone.get_server_id(name)
+                }),
+                get_client: Arc::new({
+                    let self_clone = self.clone(); // Clone self to move into the closure
+                    move |id: ServerId| {
+                        // We need a mutable reference to self, which we can't have in a closure
+                        // Create a new client using the same logic as get_client, but without caching
+                        let servers = &self_clone.servers;
+                        if let Some(server) = servers.get(&id) {
+                            // We can't actually take stdin/stdout from the server in this closure because we only
+                            // have a shared reference. Instead, we'll create a new client to talk to the existing server.
+                            // This is inefficient but necessary for the proxy's design.
+                            let server_name = server.name().to_string();
+                            match McpClient::connect(&server_name, &self_clone.config) {
+                                Ok(client) => Ok(client),
+                                Err(e) => {
+                                    tracing::error!(error = %e, server_id = ?id, "Failed to create client for SSE proxy");
+                                    Err(e)
+                                }
+                            }
+                        } else {
+                            Err(Error::ServerNotFound(format!("{:?}", id)))
+                        }
+                    }
+                }),
+                get_allowed_servers: Arc::new({
+                    let config = self.config.clone(); // Clone config to move into the closure
+                    move || {
+                        // Extract the allowed_servers from the sse_proxy config if present
+                        config
+                            .sse_proxy
+                            .as_ref()
+                            .and_then(|proxy_config| proxy_config.allowed_servers.clone())
+                    }
+                }),
+                get_server_config_keys: Arc::new({
+                    let config = self.config.clone(); // Clone config to move into the closure
+                    move || {
+                        // Return all server names from the config
+                        config.mcp_servers.keys().cloned().collect()
+                    }
+                }),
+            };
 
-            // Create proxy using the simplified constructor
-            // The SSEProxy will get server info directly from the runner
-            let proxy = SSEProxy::new(new_runner, proxy_config.clone());
+            // Convert the config reference to an owned value
+            let proxy_config_owned = proxy_config.clone();
 
-            // Store the proxy instance
-            self.sse_proxy = Some(proxy.clone());
+            // Start the proxy with the runner access functions
+            let proxy_handle = SSEProxy::start_proxy(runner_access, proxy_config_owned).await?;
 
-            // Start the proxy in a background task
-            let proxy_arc = std::sync::Arc::new(proxy);
-            let proxy_clone = std::sync::Arc::clone(&proxy_arc);
-
-            tokio::spawn(async move {
-                if let Err(e) = (*proxy_clone).start().await {
-                    tracing::error!(error = %e, "SSE proxy server failed");
-                }
-            });
+            // Store the proxy handle
+            self.sse_proxy_handle = Some(proxy_handle);
 
             tracing::info!(
                 "SSE proxy server started on {}:{}",
@@ -629,16 +677,16 @@ impl McpRunner {
         })
     }
 
-    /// Get the running SSE proxy instance if it exists
+    /// Get the running SSE proxy handle if it exists
     ///
-    /// This method provides access to the running SSE proxy instance, which can be used
-    /// for more advanced operations or to get runtime information about the proxy.
+    /// This method provides access to the running SSE proxy handle, which can be used
+    /// to communicate with the proxy or control it.
     /// Note that this will only return a value if the proxy was previously started
     /// with `start_sse_proxy()` or `start_all_with_proxy()`.
     ///
     /// # Returns
     ///
-    /// A `Result` containing a reference to the running `SSEProxy` instance,
+    /// A `Result` containing a reference to the running `SSEProxyHandle` instance,
     /// or an `Error::Other` if no SSE proxy is running.
     ///
     /// # Examples
@@ -655,12 +703,10 @@ impl McpRunner {
     ///     let _server_ids = server_ids?;
     ///     
     ///     if proxy_started {
-    ///         // Access the running proxy instance
-    ///         let proxy = runner.get_sse_proxy()?;
-    ///         let config = proxy.config();
+    ///         // Access the running proxy handle
+    ///         let proxy_handle = runner.get_sse_proxy_handle()?;
+    ///         let config = proxy_handle.config();
     ///         println!("SSE proxy is running on {}:{}", config.address, config.port);
-    ///         
-    ///         // Could perform additional operations with the proxy instance
     ///     }
     ///     
     ///     Ok(())
@@ -669,10 +715,10 @@ impl McpRunner {
     ///
     /// This method is instrumented with `tracing`.
     #[tracing::instrument(skip(self))]
-    pub fn get_sse_proxy(&self) -> Result<&SSEProxy> {
-        tracing::debug!("Getting SSE proxy instance");
-        self.sse_proxy.as_ref().ok_or_else(|| {
-            tracing::warn!("SSE proxy instance requested but no proxy is running");
+    pub fn get_sse_proxy_handle(&self) -> Result<&SSEProxyHandle> {
+        tracing::debug!("Getting SSE proxy handle");
+        self.sse_proxy_handle.as_ref().ok_or_else(|| {
+            tracing::warn!("SSE proxy handle requested but no proxy is running");
             Error::Other("SSE proxy not running".to_string())
         })
     }
@@ -909,7 +955,7 @@ impl McpRunner {
     ///
     /// This method is instrumented with `tracing`.
     #[tracing::instrument(skip(self))]
-    fn get_server_info_snapshot(&self) -> HashMap<String, proxy::types::ServerInfo> {
+    fn get_server_info_snapshot(&self) -> HashMap<String, ServerInfo> {
         tracing::debug!("Creating server information snapshot for SSE proxy");
         let mut server_info = HashMap::new();
 
@@ -918,7 +964,7 @@ impl McpRunner {
                 let status = server.status();
                 server_info.insert(
                     name.clone(),
-                    proxy::types::ServerInfo {
+                    ServerInfo {
                         name: name.clone(),
                         id: format!("{:?}", id),
                         status: format!("{:?}", status),
@@ -929,5 +975,17 @@ impl McpRunner {
         }
 
         server_info
+    }
+}
+
+impl Clone for McpRunner {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            servers: self.servers.clone(),
+            server_names: self.server_names.clone(),
+            sse_proxy_handle: self.sse_proxy_handle.clone(),
+            clients: HashMap::new(), // We don't clone clients as they can't be cleanly cloned
+        }
     }
 }

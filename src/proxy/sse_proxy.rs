@@ -14,7 +14,7 @@
 //! with comprehensive logging and error handling.
 
 use crate::Error;
-use crate::McpRunner;
+use crate::McpClient;
 use crate::config::SSEProxyConfig;
 use crate::error::Result;
 use crate::server::ServerId;
@@ -28,10 +28,158 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 use tracing;
+
+/// Type alias for server ID retrieval function
+type ServerIdRetriever = dyn Fn(&str) -> Result<ServerId> + Send + Sync;
+/// Type alias for client retrieval function
+type ClientRetriever = dyn Fn(ServerId) -> Result<McpClient> + Send + Sync;
+/// Type alias for allowed servers retrieval function
+type AllowedServersRetriever = dyn Fn() -> Option<Vec<String>> + Send + Sync;
+/// Type alias for server config keys retrieval function
+type ServerConfigKeysRetriever = dyn Fn() -> Vec<String> + Send + Sync;
+
+/// Server information update message sent between
+/// McpRunner and the SSEProxy
+#[derive(Debug, Clone)]
+pub enum ServerInfoUpdate {
+    /// Update information about a specific server
+    UpdateServer {
+        /// Server name
+        name: String,
+        /// Server ID
+        id: Option<ServerId>,
+        /// Server status
+        status: String,
+    },
+    /// Add a new server to the proxy cache
+    AddServer {
+        /// Server name
+        name: String,
+        /// Server information
+        info: ServerInfo,
+    },
+    /// Shutdown the proxy
+    Shutdown,
+}
+
+/// Handle for controlling the SSE proxy
+///
+/// This handle is stored by the McpRunner to communicate with the SSE proxy.
+/// It allows the runner to send updates to the proxy about server status changes
+/// and other events without needing to access the proxy directly.
+#[derive(Clone)]
+pub struct SSEProxyHandle {
+    /// Channel for sending server information updates to the proxy
+    server_tx: mpsc::Sender<ServerInfoUpdate>,
+    /// Proxy task handle
+    handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Configuration for the proxy
+    config: SSEProxyConfig,
+    /// Shutdown flag
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+impl SSEProxyHandle {
+    /// Create a new SSE proxy handle
+    fn new(
+        server_tx: mpsc::Sender<ServerInfoUpdate>,
+        handle: JoinHandle<()>,
+        config: SSEProxyConfig,
+        shutdown_flag: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            server_tx,
+            handle: Arc::new(Mutex::new(Some(handle))),
+            config,
+            shutdown_flag,
+        }
+    }
+
+    /// Update server information in the proxy
+    pub async fn update_server_info(
+        &self,
+        server_name: &str,
+        server_id: Option<ServerId>,
+        status: &str,
+    ) -> Result<()> {
+        let update = ServerInfoUpdate::UpdateServer {
+            name: server_name.to_string(),
+            id: server_id,
+            status: status.to_string(),
+        };
+
+        self.server_tx.send(update).await.map_err(|e| {
+            Error::Communication(format!("Failed to send server info update to proxy: {}", e))
+        })
+    }
+
+    /// Add a new server to the proxy cache
+    pub async fn add_server_info(&self, server_name: &str, server_info: ServerInfo) -> Result<()> {
+        let update = ServerInfoUpdate::AddServer {
+            name: server_name.to_string(),
+            info: server_info,
+        };
+
+        self.server_tx.send(update).await.map_err(|e| {
+            Error::Communication(format!("Failed to send server info update to proxy: {}", e))
+        })
+    }
+
+    /// Shutdown the proxy
+    pub async fn shutdown(&self) -> Result<()> {
+        // Set the shutdown flag to signal the proxy to stop
+        self.shutdown_flag.store(true, Ordering::SeqCst);
+
+        // Send a shutdown message through the channel
+        let _ = self.server_tx.send(ServerInfoUpdate::Shutdown).await;
+
+        // Wait for the proxy task to finish
+        let mut handle = self.handle.lock().await;
+        if let Some(h) = handle.take() {
+            // Wait with a timeout
+            match tokio::time::timeout(std::time::Duration::from_secs(5), h).await {
+                Ok(result) => {
+                    if let Err(e) = result {
+                        tracing::warn!("Error while joining proxy task: {}", e);
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!("Timeout waiting for proxy task to finish");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the proxy configuration
+    pub fn config(&self) -> &SSEProxyConfig {
+        &self.config
+    }
+}
+
+/// Access to McpRunner operations needed by the SSE proxy
+///
+/// This struct provides a controlled interface to the operations
+/// the SSE proxy needs from the McpRunner, rather than giving
+/// it direct access to the entire runner.
+#[derive(Clone)]
+pub struct SSEProxyRunnerAccess {
+    /// Function to get server ID by name
+    pub get_server_id: Arc<ServerIdRetriever>,
+    /// Function to get a client for a server
+    pub get_client: Arc<ClientRetriever>,
+    /// Function to get allowed servers if configured
+    pub get_allowed_servers: Arc<AllowedServersRetriever>,
+    /// Function to get server config keys
+    pub get_server_config_keys: Arc<ServerConfigKeysRetriever>,
+}
 
 /// SSE Proxy server for MCP servers
 ///
@@ -41,28 +189,37 @@ use tracing;
 pub struct SSEProxy {
     /// Configuration for the proxy
     config: SSEProxyConfig,
-    /// Runner instance to communicate with MCP servers
-    runner: Arc<Mutex<McpRunner>>,
+    /// Direct access to McpRunner for server operations
+    runner_access: SSEProxyRunnerAccess,
     /// Event manager for broadcasting events (shared via Arc)
     event_manager: Arc<EventManager>,
     /// Server address
     address: SocketAddr,
     /// Server information cache (shared via Arc)
     server_info: Arc<Mutex<HashMap<String, ServerInfo>>>,
+    /// Channel for receiving server updates from McpRunner
+    server_rx: Arc<Mutex<Option<mpsc::Receiver<ServerInfoUpdate>>>>,
+    /// Shutdown flag
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl SSEProxy {
-    /// Create a new SSE proxy
+    /// Create a new SSE proxy with runner access functions
     ///
     /// # Arguments
     ///
-    /// * `runner` - MCP runner instance for communicating with MCP servers
+    /// * `runner_access` - Functions to access McpRunner operations
     /// * `config` - Configuration for the SSE proxy
+    /// * `server_rx` - Channel for receiving server information updates
     ///
     /// # Returns
     ///
     /// A new `SSEProxy` instance
-    pub fn new(runner: McpRunner, config: SSEProxyConfig) -> Self {
+    pub fn new(
+        runner_access: SSEProxyRunnerAccess,
+        config: SSEProxyConfig,
+        server_rx: mpsc::Receiver<ServerInfoUpdate>,
+    ) -> Self {
         // Create socket address from config
         let address = match SocketAddr::from_str(&format!("{}:{}", config.address, config.port)) {
             Ok(addr) => addr,
@@ -74,33 +231,79 @@ impl SSEProxy {
             }
         };
 
-        // Get server information directly from the runner
-        let server_info = runner.get_server_info_snapshot();
+        // Initialize empty server info cache
+        let server_info = HashMap::new();
 
-        tracing::debug!(
-            "Initialized SSE proxy with {} servers from runner",
-            server_info.len()
-        );
+        tracing::debug!("Initialized SSE proxy with direct runner access");
 
         Self {
             config,
-            runner: Arc::new(Mutex::new(runner)),
+            runner_access,
             event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
             address,
             server_info: Arc::new(Mutex::new(server_info)),
+            server_rx: Arc::new(Mutex::new(Some(server_rx))),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// Start the SSE proxy server
     ///
-    /// Binds to the configured address and starts listening for client connections.
-    /// For each new connection, spawns a task to handle the connection.
-    /// This is a long-running method that only returns if the server fails to bind.
+    /// Creates a proxy handle and starts the server in a background task.
+    /// Returns a handle that can be used to control and communicate with the proxy.
+    ///
+    /// # Arguments
+    ///
+    /// * `runner_access` - Functions to access McpRunner operations
+    /// * `config` - Configuration for the SSE proxy
     ///
     /// # Returns
     ///
-    /// A `Result<()>` indicating success or failure to bind
-    pub async fn start(&self) -> Result<()> {
+    /// A `Result` containing a `SSEProxyHandle` or an error
+    pub async fn start_proxy(
+        runner_access: SSEProxyRunnerAccess,
+        config: SSEProxyConfig,
+    ) -> Result<SSEProxyHandle> {
+        // Create channel for communication between McpRunner and proxy
+        let (server_tx, server_rx) = mpsc::channel(32);
+
+        // Create the shutdown flag
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let shutdown_flag_clone = shutdown_flag.clone();
+
+        // Create the proxy instance
+        let proxy = Self::new(runner_access, config.clone(), server_rx);
+
+        // Start the proxy in a background task
+        let handle = tokio::spawn(async move {
+            let _ = proxy.run().await;
+        });
+
+        // Return a handle to control the proxy
+        Ok(SSEProxyHandle::new(
+            server_tx,
+            handle,
+            config,
+            shutdown_flag_clone,
+        ))
+    }
+
+    /// Main execution loop for the proxy server
+    ///
+    /// This method manages both the HTTP server and
+    /// the channel that receives server information updates.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or failure
+    async fn run(&self) -> Result<()> {
+        // Take the receiver out of the Option
+        let mut server_rx = match self.server_rx.lock().await.take() {
+            Some(rx) => rx,
+            None => return Err(Error::Other("Server receiver already taken".to_string())),
+        };
+
+        // Start listening for connections
         tracing::info!(address = %self.address, "Starting SSE proxy server");
 
         let listener = TcpListener::bind(self.address).await.map_err(|e| {
@@ -110,24 +313,141 @@ impl SSEProxy {
 
         tracing::info!("SSE proxy server started, listening for connections");
 
-        // Accept incoming connections
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    tracing::debug!(client_addr = %addr, "New client connection");
+        // Clone the shutdown flag for the connection acceptor loop
+        let shutdown_flag = self.shutdown_flag.clone();
+        let proxy_clone = self.clone();
 
-                    // Spawn a task to handle this connection
-                    // Clone the proxy (which clones the Arcs)
-                    let proxy_clone = self.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, addr, proxy_clone).await {
-                            tracing::error!(client_addr = %addr, error = %e, "Error handling client connection");
-                        }
-                    });
+        // Spawn a task to handle accepting connections
+        let connection_handle = tokio::spawn(async move {
+            while !shutdown_flag.load(Ordering::SeqCst) {
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(100),
+                    listener.accept(),
+                )
+                .await
+                {
+                    Ok(Ok((stream, addr))) => {
+                        tracing::debug!(client_addr = %addr, "New client connection");
+
+                        // Clone the proxy (which clones the Arcs)
+                        let inner_proxy_clone = proxy_clone.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                Self::handle_connection(stream, addr, inner_proxy_clone).await
+                            {
+                                tracing::error!(client_addr = %addr, error = %e, "Error handling client connection");
+                            }
+                        });
+                    }
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "Error accepting client connection");
+                    }
+                    Err(_) => {
+                        // Timeout - check shutdown flag and continue
+                    }
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "Error accepting client connection");
+            }
+        });
+
+        // Main loop to process server information updates
+        while !self.shutdown_flag.load(Ordering::SeqCst) {
+            match tokio::time::timeout(tokio::time::Duration::from_millis(100), server_rx.recv())
+                .await
+            {
+                Ok(Some(update)) => match update {
+                    ServerInfoUpdate::UpdateServer { name, id, status } => {
+                        self.handle_update_server_info(&name, id, &status).await;
+                    }
+                    ServerInfoUpdate::AddServer { name, info } => {
+                        self.handle_add_server_info(&name, info).await;
+                    }
+                    ServerInfoUpdate::Shutdown => {
+                        tracing::info!("Received shutdown message");
+                        self.shutdown_flag.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                },
+                Ok(None) => {
+                    // Channel closed
+                    tracing::info!("Server information channel closed, shutting down proxy");
+                    self.shutdown_flag.store(true, Ordering::SeqCst);
+                    break;
                 }
+                Err(_) => {
+                    // Timeout - check shutdown flag and continue
+                }
+            }
+        }
+
+        // Wait for the connection acceptor to finish
+        if let Err(e) = connection_handle.await {
+            tracing::warn!("Error joining connection acceptor task: {}", e);
+        }
+
+        tracing::info!("SSE proxy server shut down");
+        Ok(())
+    }
+
+    /// Handle updates to server information
+    async fn handle_update_server_info(
+        &self,
+        server_name: &str,
+        server_id: Option<ServerId>,
+        status: &str,
+    ) {
+        let mut server_info_cache = self.server_info.lock().await;
+
+        if let Some(info) = server_info_cache.get_mut(server_name) {
+            if let Some(id) = server_id {
+                // Update with new information
+                info.id = format!("{:?}", id);
+                info.status = status.to_string();
+                tracing::debug!(
+                    server = %server_name,
+                    server_id = ?id,
+                    status = %status,
+                    "Updated server info in SSE proxy cache"
+                );
+            } else {
+                // Server was removed or stopped
+                info.id = "not_running".to_string();
+                info.status = "Stopped".to_string();
+                tracing::debug!(
+                    server = %server_name,
+                    "Marked server as stopped in SSE proxy cache"
+                );
+            }
+
+            // Send a status update event to clients
+            self.send_status_update(server_id.unwrap_or_else(ServerId::new), server_name, status);
+        } else {
+            tracing::warn!(
+                server = %server_name,
+                "Attempted to update server info in SSE proxy cache, but server not found"
+            );
+        }
+    }
+
+    /// Handle adding new server information
+    async fn handle_add_server_info(&self, server_name: &str, server_info: ServerInfo) {
+        let mut server_info_cache = self.server_info.lock().await;
+
+        if server_info_cache.contains_key(server_name) {
+            tracing::warn!(
+                server = %server_name,
+                "Attempted to add server to SSE proxy cache, but server already exists"
+            );
+        } else {
+            // Add the new server info
+            server_info_cache.insert(server_name.to_string(), server_info.clone());
+            tracing::info!(
+                server = %server_name,
+                "Added new server to SSE proxy cache"
+            );
+
+            // Send a status update event to clients
+            if let Ok(id) = (self.runner_access.get_server_id)(server_name) {
+                self.send_status_update(id, server_name, &server_info.status);
             }
         }
     }
@@ -297,7 +617,6 @@ impl SSEProxy {
                 // Pass writer and proxy directly
                 Self::handle_list_servers(&mut writer, proxy).await
             }
-
             // List tools for a specific server
             ("GET", p) if p.starts_with("/servers/") && p.ends_with("/tools") => {
                 let parts: Vec<&str> = p.split('/').collect();
@@ -309,7 +628,6 @@ impl SSEProxy {
                     HttpResponse::send_not_found_response(&mut writer).await
                 }
             }
-
             // List resources for a specific server
             ("GET", p) if p.starts_with("/servers/") && p.ends_with("/resources") => {
                 let parts: Vec<&str> = p.split('/').collect();
@@ -321,7 +639,6 @@ impl SSEProxy {
                     HttpResponse::send_not_found_response(&mut writer).await
                 }
             }
-
             // Get a specific resource
             ("GET", p) if p.starts_with("/resource/") => {
                 let parts: Vec<&str> = p.split('/').collect();
@@ -334,10 +651,8 @@ impl SSEProxy {
                     HttpResponse::send_not_found_response(&mut writer).await
                 }
             }
-
             // OPTIONS for CORS
             ("OPTIONS", _) => HttpResponse::handle_options_request(&mut writer).await,
-
             // Not found for other paths
             _ => HttpResponse::send_not_found_response(&mut writer).await,
         }
@@ -662,13 +977,11 @@ impl SSEProxy {
             tracing::warn!("Unable to serialize proxy config for debugging");
         }
 
-        // Get a lock on both the runner and the server info cache
-        let runner = proxy.runner.lock().await;
         let server_info_cache = proxy.server_info.lock().await;
         let mut servers = Vec::new();
 
         // Log allowed servers configuration
-        if let Some(allowed_servers) = &proxy.config.allowed_servers {
+        if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
             tracing::info!("Allowed servers configured: {:?}", allowed_servers);
         } else {
             tracing::info!("No allowed servers list configured - all servers will be visible");
@@ -686,7 +999,7 @@ impl SSEProxy {
             // Use the cached info directly
             for (name, info) in server_info_cache.iter() {
                 // Check if this server is in the allowed list (if we have one)
-                if let Some(allowed_servers) = &proxy.config.allowed_servers {
+                if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
                     if !allowed_servers.contains(name) {
                         tracing::info!(server = %name, "Server '{}' not in allowed list, excluding from response", name);
                         continue;
@@ -697,35 +1010,29 @@ impl SSEProxy {
             }
         } else {
             tracing::info!("No cached server info available, using config-only information");
-            // Log all servers in config
-            let config_servers = runner.config.mcp_servers.keys().collect::<Vec<_>>();
+            // Get all server names from config
+            let config_servers = (proxy.runner_access.get_server_config_keys)();
             tracing::info!("Servers in config: {:?}", config_servers);
 
             // Fall back to the original behavior if no cache is available
             // Collect information about all servers in the config
-            for name in runner.config.mcp_servers.keys() {
+            for name in config_servers {
                 // Check if this server is in the allowed list (if we have one)
-                if let Some(allowed_servers) = &proxy.config.allowed_servers {
-                    if !allowed_servers.contains(name) {
+                if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
+                    if !allowed_servers.contains(&name) {
                         tracing::info!(server = %name, "Server '{}' not in allowed list, excluding from response", name);
                         continue;
                     }
                     tracing::info!(server = %name, "Server '{}' is in allowed list, including in response", name);
                 }
 
-                let server_info = match runner.get_server_id(name) {
-                    Ok(id) => {
-                        let status = match runner.server_status(id) {
-                            Ok(s) => format!("{:?}", s),
-                            Err(_) => "Unknown".to_string(),
-                        };
-
-                        ServerInfo {
-                            name: name.clone(),
-                            id: format!("{:?}", id),
-                            status,
-                        }
-                    }
+                // Try to get server information
+                let server_info = match (proxy.runner_access.get_server_id)(&name) {
+                    Ok(id) => ServerInfo {
+                        name: name.clone(),
+                        id: format!("{:?}", id),
+                        status: "Running".to_string(),
+                    },
                     Err(_) => {
                         // Server not started yet
                         ServerInfo {
@@ -775,7 +1082,7 @@ impl SSEProxy {
         tracing::debug!(server = %server_name, "Handling list tools request");
 
         // Check if server is allowed
-        if let Some(allowed_servers) = &proxy.config.allowed_servers {
+        if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
                 return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
@@ -783,11 +1090,8 @@ impl SSEProxy {
             }
         }
 
-        // Get a lock on the runner
-        let mut runner = proxy.runner.lock().await;
-
         // Get server ID
-        let server_id = match runner.get_server_id(server_name) {
+        let server_id = match (proxy.runner_access.get_server_id)(server_name) {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!(server = %server_name, error = %e, "Server not found");
@@ -796,7 +1100,7 @@ impl SSEProxy {
         };
 
         // Get client
-        let client = match runner.get_client(server_id) {
+        let client = match (proxy.runner_access.get_client)(server_id) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
@@ -808,9 +1112,6 @@ impl SSEProxy {
                 .await;
             }
         };
-
-        // Drop the lock on the runner
-        drop(runner);
 
         // List tools
         let tools = match client.list_tools().await {
@@ -866,7 +1167,7 @@ impl SSEProxy {
         tracing::debug!(server = %server_name, "Handling list resources request");
 
         // Check if server is allowed
-        if let Some(allowed_servers) = &proxy.config.allowed_servers {
+        if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
                 return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
@@ -874,11 +1175,8 @@ impl SSEProxy {
             }
         }
 
-        // Get a lock on the runner
-        let mut runner = proxy.runner.lock().await;
-
         // Get server ID
-        let server_id = match runner.get_server_id(server_name) {
+        let server_id = match (proxy.runner_access.get_server_id)(server_name) {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!(server = %server_name, error = %e, "Server not found");
@@ -887,7 +1185,7 @@ impl SSEProxy {
         };
 
         // Get client
-        let client = match runner.get_client(server_id) {
+        let client = match (proxy.runner_access.get_client)(server_id) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
@@ -899,9 +1197,6 @@ impl SSEProxy {
                 .await;
             }
         };
-
-        // Drop the lock on the runner
-        drop(runner);
 
         // List resources
         let resources = match client.list_resources().await {
@@ -960,7 +1255,7 @@ impl SSEProxy {
         tracing::debug!(server = %server_name, uri = %resource_uri, "Handling get resource request");
 
         // Check if server is allowed
-        if let Some(allowed_servers) = &proxy.config.allowed_servers {
+        if let Some(allowed_servers) = (proxy.runner_access.get_allowed_servers)() {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
                 return HttpResponse::send_forbidden_response(writer, "Server not in allowed list")
@@ -968,11 +1263,8 @@ impl SSEProxy {
             }
         }
 
-        // Get a lock on the runner
-        let mut runner = proxy.runner.lock().await;
-
         // Get server ID
-        let server_id = match runner.get_server_id(server_name) {
+        let server_id = match (proxy.runner_access.get_server_id)(server_name) {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!(server = %server_name, error = %e, "Server not found");
@@ -981,7 +1273,7 @@ impl SSEProxy {
         };
 
         // Get client
-        let client = match runner.get_client(server_id) {
+        let client = match (proxy.runner_access.get_client)(server_id) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
@@ -993,9 +1285,6 @@ impl SSEProxy {
                 .await;
             }
         };
-
-        // Drop the lock on the runner
-        drop(runner);
 
         // Get resource (explicitly use Value as the return type)
         let resource_data: serde_json::Value = match client.get_resource(resource_uri).await {
@@ -1047,7 +1336,7 @@ impl SSEProxy {
         tracing::debug!(server = %server_name, tool = %tool_name, req_id = %request_id, "Processing tool call");
 
         // Check if this server is allowed
-        if let Some(allowed_servers) = &self.config.allowed_servers {
+        if let Some(allowed_servers) = (self.runner_access.get_allowed_servers)() {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
 
@@ -1065,11 +1354,8 @@ impl SSEProxy {
             }
         }
 
-        // Get a lock on the runner
-        let mut runner = self.runner.lock().await;
-
         // Get server ID
-        let server_id = match runner.get_server_id(server_name) {
+        let server_id = match (self.runner_access.get_server_id)(server_name) {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!(server = %server_name, error = %e, "Server not found");
@@ -1088,7 +1374,7 @@ impl SSEProxy {
         let server_id_str = format!("{:?}", server_id); // Format server_id once
 
         // Get a client
-        let client = match runner.get_client(server_id) {
+        let client = match (self.runner_access.get_client)(server_id) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
@@ -1104,9 +1390,6 @@ impl SSEProxy {
                 return Err(e);
             }
         };
-
-        // We need to drop the lock on the runner before making the async call
-        drop(runner);
 
         // Call the tool
         let result = client.call_tool(tool_name, &args).await;
@@ -1181,128 +1464,7 @@ impl SSEProxy {
     /// Get the proxy configuration
     ///
     /// Returns a reference to the SSE proxy configuration.
-    /// This is useful for accessing settings like address, port, and authentication options.
-    ///
-    /// # Returns
-    ///
-    /// A reference to the `SSEProxyConfig` containing the proxy settings.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use mcp_runner::McpRunner;
-    /// use std::net::SocketAddr;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> mcp_runner::Result<()> {
-    ///     let mut runner = McpRunner::from_config_file("config.json")?;
-    ///     
-    ///     // Start the proxy
-    ///     runner.start_sse_proxy().await?;
-    ///     
-    ///     // Get the proxy instance and its config
-    ///     let proxy = runner.get_sse_proxy()?;
-    ///     let config = proxy.config();
-    ///     
-    ///     println!("Proxy listening on {}:{}", config.address, config.port);
-    ///     
-    ///     Ok(())
-    /// }
-    /// ```
     pub fn config(&self) -> &SSEProxyConfig {
         &self.config
-    }
-
-    /// Update the status of a server in the proxy's cache
-    ///
-    /// This method updates the cached server information when a server's status changes.
-    /// It's used by the runner to keep the proxy in sync with server state changes.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_name` - Name of the server whose status has changed
-    /// * `server_id` - ID of the server, or None if the server was removed
-    /// * `status` - New status of the server, or "Stopped" if the server was removed
-    ///
-    /// # Returns
-    ///
-    /// `true` if the server info was updated, `false` if the server wasn't found in the cache
-    pub async fn update_server_info(
-        &self,
-        server_name: &str,
-        server_id: Option<ServerId>,
-        status: &str,
-    ) -> bool {
-        let mut server_info_cache = self.server_info.lock().await;
-
-        if let Some(info) = server_info_cache.get_mut(server_name) {
-            if let Some(id) = server_id {
-                // Update with new information
-                info.id = format!("{:?}", id);
-                info.status = status.to_string();
-                tracing::debug!(
-                    server = %server_name,
-                    server_id = ?id,
-                    status = %status,
-                    "Updated server info in SSE proxy cache"
-                );
-            } else {
-                // Server was removed or stopped
-                info.id = "not_running".to_string();
-                info.status = "Stopped".to_string();
-                tracing::debug!(
-                    server = %server_name,
-                    "Marked server as stopped in SSE proxy cache"
-                );
-            }
-
-            // Send a status update event to clients
-            self.send_status_update(server_id.unwrap_or_else(ServerId::new), server_name, status);
-
-            true
-        } else {
-            tracing::warn!(
-                server = %server_name,
-                "Attempted to update server info in SSE proxy cache, but server not found"
-            );
-            false
-        }
-    }
-
-    /// Add a new server to the proxy's cache
-    ///
-    /// This method adds new server information to the proxy's cache when a server is started
-    /// after the proxy is already running.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_name` - Name of the server to add
-    /// * `server_info` - ServerInfo structure with details about the server
-    ///
-    /// # Returns
-    ///
-    /// `true` if the server info was added, `false` if it already existed
-    pub async fn add_server_info(
-        &self,
-        server_name: &str,
-        server_info: crate::proxy::types::ServerInfo,
-    ) -> bool {
-        let mut server_info_cache = self.server_info.lock().await;
-
-        if server_info_cache.contains_key(server_name) {
-            tracing::warn!(
-                server = %server_name,
-                "Attempted to add server to SSE proxy cache, but server already exists"
-            );
-            false
-        } else {
-            // Add the new server info
-            server_info_cache.insert(server_name.to_string(), server_info);
-            tracing::info!(
-                server = %server_name,
-                "Added new server to SSE proxy cache"
-            );
-            true
-        }
     }
 }

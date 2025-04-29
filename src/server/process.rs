@@ -200,3 +200,19 @@ impl ServerProcess {
         }
     }
 }
+
+impl Clone for ServerProcess {
+    fn clone(&self) -> Self {
+        // Note: We can't clone the actual running process, so when cloning a ServerProcess,
+        // we create a new instance with the same configuration but no running child process.
+        // This is acceptable for our use case since the clone is only used for the SSE proxy
+        // to check status information, not to control the actual process.
+        Self {
+            config: self.config.clone(),
+            name: self.name.clone(),
+            id: self.id,
+            child: None, // We can't clone a running process
+            status: self.status,
+        }
+    }
+}

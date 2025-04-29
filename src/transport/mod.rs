@@ -112,3 +112,65 @@ pub trait Transport: Send + Sync {
     /// - `Err(Error)` if the resource retrieval failed
     async fn get_resource(&self, uri: &str) -> Result<Value>;
 }
+
+/// Creates a new transport for a server using the provided configuration
+///
+/// This function creates an appropriate transport based on the server configuration.
+/// Currently, it only supports stdio transport.
+///
+/// # Arguments
+///
+/// * `server_name` - Name of the server for which to create transport
+/// * `server_config` - Server configuration
+///
+/// # Returns
+///
+/// A `Result<StdioTransport>` containing a transport implementation
+pub fn create_transport_for_config(
+    server_name: &str, 
+    server_config: &crate::config::ServerConfig
+) -> Result<StdioTransport> {
+    use crate::error::Error;
+    use async_process::{Command, Stdio as AsyncStdio};
+    use tracing;
+
+    tracing::debug!(server = %server_name, "Creating transport for server");
+
+    // Currently we only support launching a new process for connection
+    let mut cmd = Command::new(&server_config.command);
+    
+    // Add arguments
+    cmd.args(&server_config.args);
+    
+    // Set environment variables
+    for (key, value) in &server_config.env {
+        cmd.env(key, value);
+    }
+
+    // Configure stdio
+    cmd.stdin(AsyncStdio::piped())
+       .stdout(AsyncStdio::piped())
+       .stderr(AsyncStdio::inherit());
+
+    // Spawn the process
+    let child = cmd.spawn().map_err(|e| {
+        tracing::error!(error = %e, "Failed to spawn server process");
+        Error::Process(format!("Failed to spawn server process: {}", e))
+    })?;
+
+    let stdin = child.stdin.ok_or_else(|| {
+        tracing::error!("Failed to open stdin for server process");
+        Error::Process("Failed to open stdin for server process".into())
+    })?;
+
+    let stdout = child.stdout.ok_or_else(|| {
+        tracing::error!("Failed to open stdout from server process");
+        Error::Process("Failed to open stdout from server process".into())
+    })?;
+
+    // Create the StdioTransport
+    let transport = StdioTransport::new(server_name.to_string(), stdin, stdout);
+    
+    // Return the transport
+    Ok(transport)
+}
