@@ -58,11 +58,18 @@ impl SSEProxy {
     ///
     /// * `runner` - MCP runner instance for communicating with MCP servers
     /// * `config` - Configuration for the SSE proxy
+    /// * `server_info` - Optional HashMap containing server information with current status.
+    ///   If provided, the proxy will have accurate server status information immediately.
+    ///   If not provided, the proxy will use the runner to get server information on-demand.
     ///
     /// # Returns
     ///
     /// A new `SSEProxy` instance
-    pub fn new(runner: McpRunner, config: SSEProxyConfig) -> Self {
+    pub fn new(
+        runner: McpRunner,
+        config: SSEProxyConfig,
+        server_info: Option<HashMap<String, crate::proxy::types::ServerInfo>>,
+    ) -> Self {
         // Create socket address from config
         let address = match SocketAddr::from_str(&format!("{}:{}", config.address, config.port)) {
             Ok(addr) => addr,
@@ -79,92 +86,7 @@ impl SSEProxy {
             runner: Arc::new(Mutex::new(runner)),
             event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
             address,
-            server_info: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Create a new SSE proxy with just configuration instead of a full runner
-    ///
-    /// This is a more efficient constructor that only requires the configuration instead
-    /// of a full McpRunner instance, which reduces the overhead of creating the proxy.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Global configuration for all MCP servers
-    /// * `proxy_config` - Configuration for the SSE proxy
-    ///
-    /// # Returns
-    ///
-    /// A new `SSEProxy` instance
-    pub fn new_with_config(config: crate::Config, proxy_config: SSEProxyConfig) -> Self {
-        // Create a minimal runner with just the configuration
-        let runner = McpRunner::new(config);
-
-        // Create socket address from proxy_config
-        let address = match SocketAddr::from_str(&format!(
-            "{}:{}",
-            proxy_config.address, proxy_config.port
-        )) {
-            Ok(addr) => addr,
-            Err(e) => {
-                // Log the error but fallback to a default address to avoid panicking
-                tracing::error!(error = %e, "Failed to create socket address from config, using fallback address");
-                SocketAddr::from_str("127.0.0.1:3000")
-                    .expect("Hardcoded fallback address should be valid")
-            }
-        };
-
-        Self {
-            config: proxy_config,
-            runner: Arc::new(Mutex::new(runner)),
-            event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
-            address,
-            server_info: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Create a new SSE proxy with server information
-    ///
-    /// This constructor accepts pre-populated server information to ensure
-    /// the proxy has access to accurate server status data.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Global configuration for all MCP servers
-    /// * `proxy_config` - Configuration for the SSE proxy
-    /// * `server_info` - HashMap containing server information with current status
-    ///
-    /// # Returns
-    ///
-    /// A new `SSEProxy` instance
-    pub fn new_with_server_info(
-        config: crate::Config,
-        proxy_config: SSEProxyConfig,
-        server_info: HashMap<String, crate::proxy::types::ServerInfo>,
-    ) -> Self {
-        // Create a minimal runner with just the configuration
-        let runner = McpRunner::new(config);
-
-        // Create socket address from proxy_config
-        let address = match SocketAddr::from_str(&format!(
-            "{}:{}",
-            proxy_config.address, proxy_config.port
-        )) {
-            Ok(addr) => addr,
-            Err(e) => {
-                // Log the error but fallback to a default address to avoid panicking
-                tracing::error!(error = %e, "Failed to create socket address from config, using fallback address");
-                SocketAddr::from_str("127.0.0.1:3000")
-                    .expect("Hardcoded fallback address should be valid")
-            }
-        };
-
-        Self {
-            config: proxy_config,
-            runner: Arc::new(Mutex::new(runner)),
-            event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
-            address,
-            server_info: Arc::new(Mutex::new(server_info)),
+            server_info: Arc::new(Mutex::new(server_info.unwrap_or_default())),
         }
     }
 

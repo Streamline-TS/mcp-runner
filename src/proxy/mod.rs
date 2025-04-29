@@ -14,7 +14,6 @@
 //! ```no_run
 //! use mcp_runner::{McpRunner, config::SSEProxyConfig};
 //! use mcp_runner::proxy::SSEProxy;
-//! use std::str::FromStr;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a runner
@@ -30,7 +29,8 @@
 //!
 //! // Create and start the SSE proxy
 //! // The address is automatically derived from the proxy_config
-//! let proxy = SSEProxy::new(runner, proxy_config);
+//! // Pass None for server_info to have the proxy discover servers on-demand
+//! let proxy = SSEProxy::new(runner, proxy_config, None);
 //! proxy.start().await?;
 //! # Ok(())
 //! # }
