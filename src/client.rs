@@ -208,16 +208,16 @@ impl McpClient {
     #[tracing::instrument(skip(config), fields(server = %server_name))]
     pub fn connect(server_name: &str, config: &crate::Config) -> Result<Self> {
         tracing::info!("Connecting to server {}", server_name);
-        
+
         // Check if the server exists in the config
         let server_config = config.mcp_servers.get(server_name).ok_or_else(|| {
             tracing::error!("Server '{}' not found in configuration", server_name);
             Error::ServerNotFound(server_name.to_string())
         })?;
-        
+
         // Create a transport to connect to the server
         let transport = crate::transport::create_transport_for_config(server_name, server_config)?;
-        
+
         // Return a new client with the transport
         Ok(Self::new(server_name.to_string(), transport))
     }

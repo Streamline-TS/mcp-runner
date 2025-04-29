@@ -127,8 +127,8 @@ pub trait Transport: Send + Sync {
 ///
 /// A `Result<StdioTransport>` containing a transport implementation
 pub fn create_transport_for_config(
-    server_name: &str, 
-    server_config: &crate::config::ServerConfig
+    server_name: &str,
+    server_config: &crate::config::ServerConfig,
 ) -> Result<StdioTransport> {
     use crate::error::Error;
     use async_process::{Command, Stdio as AsyncStdio};
@@ -138,10 +138,10 @@ pub fn create_transport_for_config(
 
     // Currently we only support launching a new process for connection
     let mut cmd = Command::new(&server_config.command);
-    
+
     // Add arguments
     cmd.args(&server_config.args);
-    
+
     // Set environment variables
     for (key, value) in &server_config.env {
         cmd.env(key, value);
@@ -149,8 +149,8 @@ pub fn create_transport_for_config(
 
     // Configure stdio
     cmd.stdin(AsyncStdio::piped())
-       .stdout(AsyncStdio::piped())
-       .stderr(AsyncStdio::inherit());
+        .stdout(AsyncStdio::piped())
+        .stderr(AsyncStdio::inherit());
 
     // Spawn the process
     let child = cmd.spawn().map_err(|e| {
@@ -170,7 +170,7 @@ pub fn create_transport_for_config(
 
     // Create the StdioTransport
     let transport = StdioTransport::new(server_name.to_string(), stdin, stdout);
-    
+
     // Return the transport
     Ok(transport)
 }
