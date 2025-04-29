@@ -29,8 +29,8 @@
 //!
 //! // Create and start the SSE proxy
 //! // The address is automatically derived from the proxy_config
-//! // Pass None for server_info to have the proxy discover servers on-demand
-//! let proxy = SSEProxy::new(runner, proxy_config, None);
+//! // The proxy will get server information directly from the runner
+//! let proxy = SSEProxy::new(runner, proxy_config);
 //! proxy.start().await?;
 //! # Ok(())
 //! # }

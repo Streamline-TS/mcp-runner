@@ -58,18 +58,11 @@ impl SSEProxy {
     ///
     /// * `runner` - MCP runner instance for communicating with MCP servers
     /// * `config` - Configuration for the SSE proxy
-    /// * `server_info` - Optional HashMap containing server information with current status.
-    ///   If provided, the proxy will have accurate server status information immediately.
-    ///   If not provided, the proxy will use the runner to get server information on-demand.
     ///
     /// # Returns
     ///
     /// A new `SSEProxy` instance
-    pub fn new(
-        runner: McpRunner,
-        config: SSEProxyConfig,
-        server_info: Option<HashMap<String, crate::proxy::types::ServerInfo>>,
-    ) -> Self {
+    pub fn new(runner: McpRunner, config: SSEProxyConfig) -> Self {
         // Create socket address from config
         let address = match SocketAddr::from_str(&format!("{}:{}", config.address, config.port)) {
             Ok(addr) => addr,
@@ -81,12 +74,20 @@ impl SSEProxy {
             }
         };
 
+        // Get server information directly from the runner
+        let server_info = runner.get_server_info_snapshot();
+
+        tracing::debug!(
+            "Initialized SSE proxy with {} servers from runner",
+            server_info.len()
+        );
+
         Self {
             config,
             runner: Arc::new(Mutex::new(runner)),
             event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
             address,
-            server_info: Arc::new(Mutex::new(server_info.unwrap_or_default())),
+            server_info: Arc::new(Mutex::new(server_info)),
         }
     }
 

@@ -549,13 +549,12 @@ impl McpRunner {
         if let Some(proxy_config) = &self.config.sse_proxy {
             tracing::info!("Initializing SSE proxy server");
 
-            // Get server info snapshot for more accurate initial status reporting
-            let server_info = self.get_server_info_snapshot();
-
-            // Create proxy using the unified constructor with optional server_info
             // Create a new McpRunner for the proxy to use (with the same config)
             let new_runner = McpRunner::new(self.config.clone());
-            let proxy = SSEProxy::new(new_runner, proxy_config.clone(), Some(server_info));
+
+            // Create proxy using the simplified constructor
+            // The SSEProxy will get server info directly from the runner
+            let proxy = SSEProxy::new(new_runner, proxy_config.clone());
 
             // Store the proxy instance
             self.sse_proxy = Some(proxy.clone());
