@@ -1,8 +1,6 @@
 //! HTTP endpoint handlers for the SSE proxy.
 //!
 //! This module contains handlers for various HTTP endpoints supported by the SSE proxy.
-//! These handlers were extracted from the SSEProxy implementation to improve modularity
-//! and maintainability.
 
 use crate::Error;
 use crate::error::Result;

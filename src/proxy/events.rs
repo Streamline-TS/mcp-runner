@@ -3,9 +3,6 @@
 //! This module provides functionality for managing, broadcasting and streaming
 //! Server-Sent Events (SSE). It handles event broadcasting to multiple clients
 //! and the SSE connection lifecycle.
-//!
-//! SSE provides a mechanism for sending updates from the server to clients over
-//! an HTTP connection. This module implements the SSE protocol specification.
 
 use crate::Error;
 use crate::error::Result;

@@ -1,8 +1,7 @@
 //! Error handling helpers for HTTP and JSON-RPC responses.
 //!
 //! This module provides helper functions for generating and sending standard HTTP
-//! and JSON-RPC error responses, reducing duplication in error handling code
-//! across the proxy module.
+//! and JSON-RPC error responses.
 
 use crate::error::Result;
 use crate::proxy::http::HttpResponse;
