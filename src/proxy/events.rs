@@ -14,6 +14,7 @@ use crate::server::ServerId;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
+use tokio::time::{Duration, sleep};
 use tracing;
 
 /// Handles SSE event processing and broadcasting to connected clients
@@ -53,6 +54,29 @@ impl EventManager {
         self.sender.subscribe()
     }
 
+    /// Helper to serialize, create, and send an SSE message
+    fn create_and_send_event(&self, event_payload: SSEEvent, request_id: Option<&str>) {
+        match serde_json::to_string(&event_payload) {
+            Ok(json_data) => {
+                let event_type = match event_payload {
+                    SSEEvent::ToolResponse { .. } => "tool-response",
+                    SSEEvent::ToolError { .. } => "tool-error",
+                    SSEEvent::ServerStatus { .. } => "server-status",
+                };
+                let message = SSEMessage::new(event_type, &json_data, request_id);
+                self.send_message(message);
+            }
+            Err(e) => {
+                let event_type_name = match event_payload {
+                    SSEEvent::ToolResponse { .. } => "tool response",
+                    SSEEvent::ToolError { .. } => "tool error",
+                    SSEEvent::ServerStatus { .. } => "server status",
+                };
+                tracing::error!(error = %e, event_type = event_type_name, "Failed to serialize SSE event payload");
+            }
+        }
+    }
+
     /// Send a tool response event to all connected clients
     ///
     /// # Arguments
@@ -68,22 +92,13 @@ impl EventManager {
         tool_name: &str,
         response: Value,
     ) {
-        // Create the SSEEvent payload
         let event_payload = SSEEvent::ToolResponse {
             request_id: request_id.to_string(),
             server_id: server_id.to_string(),
             tool_name: tool_name.to_string(),
             response,
         };
-
-        // Serialize the event
-        if let Ok(json_data) = serde_json::to_string(&event_payload) {
-            // Create and send the SSE message
-            let message = SSEMessage::new("tool-response", &json_data, Some(request_id));
-            self.send_message(message);
-        } else {
-            tracing::error!("Failed to serialize tool response event");
-        }
+        self.create_and_send_event(event_payload, Some(request_id));
     }
 
     /// Send a tool error event to all connected clients
@@ -95,22 +110,13 @@ impl EventManager {
     /// * `tool_name` - Name of the tool that was called
     /// * `error` - Error message describing what went wrong
     pub fn send_tool_error(&self, request_id: &str, server_id: &str, tool_name: &str, error: &str) {
-        // Create the SSEEvent payload
         let event_payload = SSEEvent::ToolError {
             request_id: request_id.to_string(),
             server_id: server_id.to_string(),
             tool_name: tool_name.to_string(),
             error: error.to_string(),
         };
-
-        // Serialize the event
-        if let Ok(json_data) = serde_json::to_string(&event_payload) {
-            // Create and send the SSE message
-            let message = SSEMessage::new("tool-error", &json_data, Some(request_id));
-            self.send_message(message);
-        } else {
-            tracing::error!("Failed to serialize tool error event");
-        }
+        self.create_and_send_event(event_payload, Some(request_id));
     }
 
     /// Send a server status update event to all connected clients
@@ -121,56 +127,52 @@ impl EventManager {
     /// * `server_name` - Name of the server
     /// * `status` - New status of the server
     pub fn send_status_update(&self, server_id: ServerId, server_name: &str, status: &str) {
-        // Create the SSEEvent payload
         let event_payload = SSEEvent::ServerStatus {
             server_id: format!("{:?}", server_id),
             server_name: server_name.to_string(),
             status: status.to_string(),
         };
-
-        // Serialize the event
-        if let Ok(json_data) = serde_json::to_string(&event_payload) {
-            // Create and send the SSE message
-            let message = SSEMessage::new("server-status", &json_data, None);
-            self.send_message(message);
-        } else {
-            tracing::error!("Failed to serialize server status event");
-        }
+        self.create_and_send_event(event_payload, None);
     }
 
     /// Helper method to send an SSE message with retries
     fn send_message(&self, message: SSEMessage) {
         // Only try to send if there are receivers
         if self.sender.receiver_count() > 0 {
-            // Try multiple times if broadcasting fails but there are still receivers
-            let mut retry_count = 0;
-            const MAX_RETRIES: usize = 3;
+            let sender = self.sender.clone();
+            let message_clone = message.clone();
 
-            while retry_count < MAX_RETRIES {
-                match self.sender.send(message.clone()) {
-                    Ok(_) => {
-                        if retry_count > 0 {
-                            tracing::debug!(
-                                retries = retry_count,
-                                "Successfully broadcast SSE event after retries"
-                            );
+            tokio::spawn(async move {
+                let mut retry_count = 0;
+                const MAX_RETRIES: usize = 3;
+                const RETRY_DELAY: Duration = Duration::from_millis(10);
+
+                while retry_count < MAX_RETRIES {
+                    match sender.send(message_clone.clone()) {
+                        Ok(_) => {
+                            if retry_count > 0 {
+                                tracing::debug!(
+                                    retries = retry_count,
+                                    "Successfully broadcast SSE event after retries"
+                                );
+                            }
+                            return;
                         }
-                        return;
-                    }
-                    Err(e) => {
-                        retry_count += 1;
-                        if retry_count < MAX_RETRIES {
-                            tracing::warn!(attempt = retry_count, error = %e, "Failed to broadcast SSE event, will retry");
-                            // Short delay before retry to allow system to recover
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                        } else {
-                            tracing::error!(error = %e, "Failed to broadcast SSE event after maximum retries");
+                        Err(e) => {
+                            retry_count += 1;
+                            if retry_count < MAX_RETRIES && sender.receiver_count() > 0 {
+                                tracing::warn!(attempt = retry_count, error = %e, "Failed to broadcast SSE event, will retry");
+                                sleep(RETRY_DELAY).await;
+                            } else {
+                                tracing::error!(error = %e, "Failed to broadcast SSE event after maximum retries or no receivers left");
+                                return;
+                            }
                         }
                     }
                 }
-            }
+            });
         } else {
-            tracing::debug!("No SSE event receivers, event dropped");
+            tracing::debug!("No SSE event receivers, event dropped: {:?}", message.event);
         }
     }
 
