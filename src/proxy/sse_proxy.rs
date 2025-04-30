@@ -19,9 +19,9 @@ use crate::config::SSEProxyConfig;
 use crate::error::Result;
 use crate::server::ServerId;
 
+use crate::proxy::connection_handler::ConnectionHandler;
 use crate::proxy::events::EventManager;
-use crate::proxy::http::HttpResponse;
-use crate::proxy::http_handlers::HttpHandlers;
+use crate::proxy::server_manager::ServerManager;
 use crate::proxy::types::ServerInfo;
 
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing;
@@ -191,12 +191,12 @@ pub struct SSEProxy {
     config: SSEProxyConfig,
     /// Direct access to McpRunner for server operations
     runner_access: SSEProxyRunnerAccess,
-    /// Event manager for broadcasting events (shared via Arc)
+    /// Event manager for broadcasting events
     event_manager: Arc<EventManager>,
+    /// Server information manager
+    server_manager: Arc<ServerManager>,
     /// Server address
     address: SocketAddr,
-    /// Server information cache (shared via Arc)
-    server_info: Arc<Mutex<HashMap<String, ServerInfo>>>,
     /// Channel for receiving server updates from McpRunner
     server_rx: Arc<Mutex<Option<mpsc::Receiver<ServerInfoUpdate>>>>,
     /// Shutdown flag
@@ -231,17 +231,20 @@ impl SSEProxy {
             }
         };
 
-        // Initialize empty server info cache
-        let server_info = HashMap::new();
+        // Initialize event manager
+        let event_manager = Arc::new(EventManager::new(100)); // Buffer up to 100 messages
+
+        // Initialize server manager with event manager
+        let server_manager = Arc::new(ServerManager::new(event_manager.clone()));
 
         tracing::debug!("Initialized SSE proxy with direct runner access");
 
         Self {
             config,
             runner_access,
-            event_manager: Arc::new(EventManager::new(100)), // Buffer up to 100 messages
+            event_manager,
+            server_manager,
             address,
-            server_info: Arc::new(Mutex::new(server_info)),
             server_rx: Arc::new(Mutex::new(Some(server_rx))),
             shutdown_flag: Arc::new(AtomicBool::new(false)),
         }
@@ -332,8 +335,12 @@ impl SSEProxy {
                         // Clone the proxy (which clones the Arcs)
                         let inner_proxy_clone = proxy_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) =
-                                Self::handle_connection(stream, addr, inner_proxy_clone).await
+                            if let Err(e) = ConnectionHandler::handle_connection(
+                                stream,
+                                addr,
+                                inner_proxy_clone,
+                            )
+                            .await
                             {
                                 tracing::error!(client_addr = %addr, error = %e, "Error handling client connection");
                             }
@@ -356,10 +363,17 @@ impl SSEProxy {
             {
                 Ok(Some(update)) => match update {
                     ServerInfoUpdate::UpdateServer { name, id, status } => {
-                        self.handle_update_server_info(&name, id, &status).await;
+                        self.server_manager
+                            .update_server_info(&name, id, &status)
+                            .await;
                     }
                     ServerInfoUpdate::AddServer { name, info } => {
-                        self.handle_add_server_info(&name, info).await;
+                        let runner_access_clone = self.runner_access.clone();
+                        self.server_manager
+                            .add_server_info(&name, info, move |server_name| {
+                                (runner_access_clone.get_server_id)(server_name)
+                            })
+                            .await;
                     }
                     ServerInfoUpdate::Shutdown => {
                         tracing::info!("Received shutdown message");
@@ -388,323 +402,37 @@ impl SSEProxy {
         Ok(())
     }
 
-    /// Handle updates to server information
-    async fn handle_update_server_info(
-        &self,
-        server_name: &str,
-        server_id: Option<ServerId>,
-        status: &str,
-    ) {
-        let mut server_info_cache = self.server_info.lock().await;
-
-        if let Some(info) = server_info_cache.get_mut(server_name) {
-            if let Some(id) = server_id {
-                // Update with new information
-                info.id = format!("{:?}", id);
-                info.status = status.to_string();
-                tracing::debug!(
-                    server = %server_name,
-                    server_id = ?id,
-                    status = %status,
-                    "Updated server info in SSE proxy cache"
-                );
-            } else {
-                // Server was removed or stopped
-                info.id = "not_running".to_string();
-                info.status = "Stopped".to_string();
-                tracing::debug!(
-                    server = %server_name,
-                    "Marked server as stopped in SSE proxy cache"
-                );
-            }
-
-            // Send a status update event to clients
-            self.send_status_update(server_id.unwrap_or_else(ServerId::new), server_name, status);
-        } else {
-            tracing::warn!(
-                server = %server_name,
-                "Attempted to update server info in SSE proxy cache, but server not found"
-            );
-        }
-    }
-
-    /// Handle adding new server information
-    async fn handle_add_server_info(&self, server_name: &str, server_info: ServerInfo) {
-        let mut server_info_cache = self.server_info.lock().await;
-
-        if server_info_cache.contains_key(server_name) {
-            tracing::warn!(
-                server = %server_name,
-                "Attempted to add server to SSE proxy cache, but server already exists"
-            );
-        } else {
-            // Add the new server info
-            server_info_cache.insert(server_name.to_string(), server_info.clone());
-            tracing::info!(
-                server = %server_name,
-                "Added new server to SSE proxy cache"
-            );
-
-            // Send a status update event to clients
-            if let Ok(id) = (self.runner_access.get_server_id)(server_name) {
-                self.send_status_update(id, server_name, &server_info.status);
-            }
-        }
-    }
-
-    /// Handle an incoming HTTP connection
-    ///
-    /// Processes an incoming HTTP connection, parsing the request and routing it
-    /// to the appropriate handler based on the path and method.
-    ///
-    /// # Arguments
-    ///
-    /// * `stream` - TCP stream for the client connection
-    /// * `_addr` - Socket address of the client
-    /// * `proxy` - SSE proxy instance
-    ///
-    /// # Returns
-    ///
-    /// A `Result<()>` indicating success or an error
-    async fn handle_connection(
-        stream: TcpStream,
-        _addr: SocketAddr,
-        proxy: SSEProxy,
-    ) -> Result<()> {
-        // Create a buffered reader for the stream
-        let (reader, mut writer) = tokio::io::split(stream);
-        let mut buf_reader = tokio::io::BufReader::new(reader);
-
-        // Read the request line
-        let mut headers = HashMap::new();
-
-        // Read the request line and headers
-        let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut line)
-            .await
-            .map_err(|e| Error::Communication(format!("Failed to read request line: {}", e)))?;
-        tracing::debug!(request = %line.trim(), "Received HTTP request");
-
-        // Parse request line
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            tracing::warn!(line = %line.trim(), "Invalid HTTP request line");
-            return HttpResponse::send_bad_request_response(
-                &mut writer,
-                "Invalid HTTP request format",
-            )
-            .await;
-        }
-        let method = parts[0];
-        let path = parts[1];
-
-        // Read headers
-        loop {
-            let mut header_line = String::new();
-            tokio::io::AsyncBufReadExt::read_line(&mut buf_reader, &mut header_line)
-                .await
-                .map_err(|e| Error::Communication(format!("Failed to read header: {}", e)))?;
-
-            let line = header_line.trim();
-            if line.is_empty() {
-                break;
-            }
-
-            if let Some((name, value)) = line.split_once(':') {
-                headers.insert(name.trim().to_lowercase(), value.trim().to_string());
-            }
-        }
-
-        // Check for authentication if required
-        if let Some(auth) = &proxy.config.authenticate {
-            if let Some(bearer) = &auth.bearer {
-                let token = if let Some(auth_header) = headers.get("authorization") {
-                    if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
-                        stripped.to_string()
-                    } else {
-                        return HttpResponse::send_unauthorized_response(&mut writer).await;
-                    }
-                } else {
-                    return HttpResponse::send_unauthorized_response(&mut writer).await;
-                };
-
-                if token != bearer.token {
-                    return HttpResponse::send_unauthorized_response(&mut writer).await;
-                }
-            }
-        }
-
-        // Helper function for reading body content
-        async fn read_body(
-            buf_reader: &mut tokio::io::BufReader<tokio::io::ReadHalf<TcpStream>>,
-            headers: &HashMap<String, String>,
-            max_size: usize,
-        ) -> Result<Vec<u8>> {
-            // Reuse the HttpHandlers helper method
-            HttpHandlers::read_body(buf_reader, headers, max_size).await
-        }
-
-        // Route based on the path and method
-        match (method, path) {
-            // SSE event stream endpoint
-            ("GET", "/events") => {
-                // Use the cloned Arc<EventManager>
-                EventManager::handle_sse_stream(&mut writer, proxy.event_manager.subscribe()).await
-            }
-            // JSON-RPC initialize endpoint
-            ("POST", "/initialize") => {
-                const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
-
-                match read_body(&mut buf_reader, &headers, MAX_BODY_SIZE).await {
-                    Ok(body) => HttpHandlers::handle_initialize(&mut writer, &body).await,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to read request body");
-                        HttpResponse::send_bad_request_response(
-                            &mut writer,
-                            &format!("Failed to read request body: {}", e),
-                        )
-                        .await
-                    }
-                }
-            }
-            // Tool call endpoint (JSON-RPC enforced)
-            ("POST", "/tool") => {
-                const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
-
-                match read_body(&mut buf_reader, &headers, MAX_BODY_SIZE).await {
-                    Ok(body) => {
-                        HttpHandlers::handle_tool_call_jsonrpc(&mut writer, &body, proxy).await
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to read request body");
-                        HttpResponse::send_bad_request_response(
-                            &mut writer,
-                            &format!("Failed to read request body: {}", e),
-                        )
-                        .await
-                    }
-                }
-            }
-            // List available servers endpoint
-            ("GET", "/servers") => HttpHandlers::handle_list_servers(&mut writer, proxy).await,
-            // List tools for a specific server
-            ("GET", p) if p.starts_with("/servers/") && p.ends_with("/tools") => {
-                let parts: Vec<&str> = p.split('/').collect();
-                if parts.len() == 4 {
-                    let server_name = parts[2];
-                    HttpHandlers::handle_list_tools(&mut writer, server_name, proxy).await
-                } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
-                }
-            }
-            // List resources for a specific server
-            ("GET", p) if p.starts_with("/servers/") && p.ends_with("/resources") => {
-                let parts: Vec<&str> = p.split('/').collect();
-                if parts.len() == 4 {
-                    let server_name = parts[2];
-                    HttpHandlers::handle_list_resources(&mut writer, server_name, proxy).await
-                } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
-                }
-            }
-            // Get a specific resource
-            ("GET", p) if p.starts_with("/resource/") => {
-                let parts: Vec<&str> = p.split('/').collect();
-                if parts.len() >= 4 {
-                    let server_name = parts[2];
-                    let resource_uri = parts[3..].join("/");
-                    HttpHandlers::handle_get_resource(
-                        &mut writer,
-                        server_name,
-                        &resource_uri,
-                        proxy,
-                    )
-                    .await
-                } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
-                }
-            }
-            // OPTIONS for CORS
-            ("OPTIONS", _) => HttpResponse::handle_options_request(&mut writer).await,
-            // Not found for other paths
-            _ => HttpResponse::send_not_found_response(&mut writer).await,
-        }
-    }
-
-    /// Get the server info cache
-    ///
-    /// Returns a reference to the server information cache
+    /// Get the server information cache
     pub fn get_server_info(&self) -> &Arc<Mutex<HashMap<String, ServerInfo>>> {
-        &self.server_info
+        self.server_manager.server_info()
     }
 
     /// Get the runner access functions
-    ///
-    /// Returns a reference to the runner access functions
     pub fn get_runner_access(&self) -> &SSEProxyRunnerAccess {
         &self.runner_access
     }
 
-    /// Send a server status update to all connected clients
-    ///
-    /// Broadcasts a status update event to all connected SSE clients.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_id` - ID of the server whose status changed
-    /// * `server_name` - Name of the server
-    /// * `status` - New status of the server
-    pub fn send_status_update(&self, server_id: ServerId, server_name: &str, status: &str) {
-        // Use shared event_manager
-        self.event_manager
-            .send_status_update(server_id, server_name, status);
+    /// Get the event manager
+    pub fn event_manager(&self) -> &Arc<EventManager> {
+        &self.event_manager
+    }
+
+    /// Get the configuration
+    pub fn config(&self) -> &SSEProxyConfig {
+        &self.config
     }
 
     /// Check if a token is valid for authentication
-    ///
-    /// Validates a bearer token against the configured authentication settings.
-    ///
-    /// # Arguments
-    ///
-    /// * `token` - Bearer token to validate
-    ///
-    /// # Returns
-    ///
-    /// `true` if the token is valid or if no authentication is configured, `false` otherwise
     pub fn is_valid_token(&self, token: &str) -> bool {
         if let Some(auth) = &self.config.authenticate {
             if let Some(bearer) = &auth.bearer {
                 return bearer.token == token;
             }
         }
-
-        // If no authentication is configured, any token is valid
-        true
-    }
-
-    /// Get the proxy configuration
-    ///
-    /// Returns a reference to the SSE proxy configuration.
-    pub fn config(&self) -> &SSEProxyConfig {
-        &self.config
+        true // If no authentication is configured, any token is valid
     }
 
     /// Process a tool call request from a client
-    ///
-    /// Asynchronously calls a tool on the specified server and sends the result
-    /// via SSE when it completes. This method handles authentication, parameter validation,
-    /// and error handling.
-    ///
-    /// # Arguments
-    ///
-    /// * `server_name` - Name of the server to call the tool on
-    /// * `tool_name` - Name of the tool to call
-    /// * `args` - Arguments to pass to the tool
-    /// * `request_id` - Unique identifier for the request
-    ///
-    /// # Returns
-    ///
-    /// A `Result<()>` indicating success or an error
     pub async fn process_tool_call(
         &self,
         server_name: &str,
@@ -719,7 +447,7 @@ impl SSEProxy {
             if !allowed_servers.contains(&server_name.to_string()) {
                 tracing::warn!(server = %server_name, "Server not in allowed list");
 
-                // Send error event via shared event_manager
+                // Send error event
                 self.event_manager.send_tool_error(
                     request_id,
                     "unknown", // Server ID is unknown if name isn't allowed/found
@@ -739,7 +467,7 @@ impl SSEProxy {
             Err(e) => {
                 tracing::warn!(server = %server_name, error = %e, "Server not found");
 
-                // Send error event via shared event_manager
+                // Send error event
                 self.event_manager.send_tool_error(
                     request_id,
                     "unknown", // Server ID is unknown
@@ -750,7 +478,7 @@ impl SSEProxy {
                 return Err(e);
             }
         };
-        let server_id_str = format!("{:?}", server_id); // Format server_id once
+        let server_id_str = format!("{:?}", server_id);
 
         // Get a client
         let client = match (self.runner_access.get_client)(server_id) {
@@ -758,7 +486,7 @@ impl SSEProxy {
             Err(e) => {
                 tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
 
-                // Send error event via shared event_manager
+                // Send error event
                 self.event_manager.send_tool_error(
                     request_id,
                     &server_id_str,
@@ -777,7 +505,7 @@ impl SSEProxy {
             Ok(response) => {
                 tracing::debug!(req_id = %request_id, "Tool call successful");
 
-                // Send response event via shared event_manager
+                // Send response event
                 self.event_manager.send_tool_response(
                     request_id,
                     &server_id_str,
@@ -790,7 +518,7 @@ impl SSEProxy {
             Err(e) => {
                 tracing::error!(req_id = %request_id, error = %e, "Tool call failed");
 
-                // Send error event via shared event_manager
+                // Send error event
                 self.event_manager.send_tool_error(
                     request_id,
                     &server_id_str,
