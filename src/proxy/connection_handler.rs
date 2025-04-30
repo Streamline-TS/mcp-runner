@@ -17,6 +17,18 @@ use tokio::io::AsyncBufReadExt;
 use tokio::net::TcpStream;
 use tracing;
 
+/// Helper enum for route handling
+enum RouteHandler {
+    Events,
+    Initialize,
+    Tool,
+    ListServers,
+    ServerTools(String),
+    ServerResources(String),
+    GetResource(String, String),
+    Options,
+}
+
 /// Connection handler for the SSE proxy
 ///
 /// Handles parsing HTTP requests, routing to appropriate handlers,
@@ -65,16 +77,13 @@ impl ConnectionHandler {
             return HttpResponse::send_unauthorized_response(&mut writer).await;
         }
 
-        // Route based on the path and method
-        match (method.as_str(), path.as_str()) {
-            // SSE event stream endpoint
-            ("GET", "/events") => {
-                // Use the cloned Arc<EventManager>
+        // Route based on the path and method using simplified routing approach
+        match Self::get_route_handler(&method, &path) {
+            Some(RouteHandler::Events) => {
                 EventManager::handle_sse_stream(&mut writer, proxy.event_manager().subscribe())
                     .await
             }
-            // JSON-RPC initialize endpoint
-            ("POST", "/initialize") => {
+            Some(RouteHandler::Initialize) => {
                 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
                 match HttpHandlers::read_body(&mut buf_reader, &headers, MAX_BODY_SIZE).await {
@@ -89,8 +98,7 @@ impl ConnectionHandler {
                     }
                 }
             }
-            // Tool call endpoint (JSON-RPC enforced)
-            ("POST", "/tool") => {
+            Some(RouteHandler::Tool) => {
                 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
                 match HttpHandlers::read_body(&mut buf_reader, &headers, MAX_BODY_SIZE).await {
@@ -107,49 +115,68 @@ impl ConnectionHandler {
                     }
                 }
             }
-            // List available servers endpoint
-            ("GET", "/servers") => HttpHandlers::handle_list_servers(&mut writer, proxy).await,
-            // List tools for a specific server
+            Some(RouteHandler::ListServers) => {
+                HttpHandlers::handle_list_servers(&mut writer, proxy).await
+            }
+            Some(RouteHandler::ServerTools(server_name)) => {
+                HttpHandlers::handle_list_tools(&mut writer, &server_name, proxy).await
+            }
+            Some(RouteHandler::ServerResources(server_name)) => {
+                HttpHandlers::handle_list_resources(&mut writer, &server_name, proxy).await
+            }
+            Some(RouteHandler::GetResource(server_name, resource_uri)) => {
+                HttpHandlers::handle_get_resource(&mut writer, &server_name, &resource_uri, proxy)
+                    .await
+            }
+            Some(RouteHandler::Options) => HttpResponse::handle_options_request(&mut writer).await,
+            None => HttpResponse::send_not_found_response(&mut writer).await,
+        }
+    }
+
+    /// Get the appropriate route handler for a given method and path
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - HTTP method
+    /// * `path` - Request path
+    ///
+    /// # Returns
+    ///
+    /// An optional `RouteHandler` enum value indicating which handler to use
+    fn get_route_handler(method: &str, path: &str) -> Option<RouteHandler> {
+        match (method, path) {
+            ("GET", "/events") => Some(RouteHandler::Events),
+            ("POST", "/initialize") => Some(RouteHandler::Initialize),
+            ("POST", "/tool") => Some(RouteHandler::Tool),
+            ("GET", "/servers") => Some(RouteHandler::ListServers),
             ("GET", p) if p.starts_with("/servers/") && p.ends_with("/tools") => {
                 let parts: Vec<&str> = p.split('/').collect();
                 if parts.len() == 4 {
-                    let server_name = parts[2];
-                    HttpHandlers::handle_list_tools(&mut writer, server_name, proxy).await
+                    Some(RouteHandler::ServerTools(parts[2].to_string()))
                 } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
+                    None
                 }
             }
-            // List resources for a specific server
             ("GET", p) if p.starts_with("/servers/") && p.ends_with("/resources") => {
                 let parts: Vec<&str> = p.split('/').collect();
                 if parts.len() == 4 {
-                    let server_name = parts[2];
-                    HttpHandlers::handle_list_resources(&mut writer, server_name, proxy).await
+                    Some(RouteHandler::ServerResources(parts[2].to_string()))
                 } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
+                    None
                 }
             }
-            // Get a specific resource
             ("GET", p) if p.starts_with("/resource/") => {
                 let parts: Vec<&str> = p.split('/').collect();
                 if parts.len() >= 4 {
-                    let server_name = parts[2];
+                    let server_name = parts[2].to_string();
                     let resource_uri = parts[3..].join("/");
-                    HttpHandlers::handle_get_resource(
-                        &mut writer,
-                        server_name,
-                        &resource_uri,
-                        proxy,
-                    )
-                    .await
+                    Some(RouteHandler::GetResource(server_name, resource_uri))
                 } else {
-                    HttpResponse::send_not_found_response(&mut writer).await
+                    None
                 }
             }
-            // OPTIONS for CORS
-            ("OPTIONS", _) => HttpResponse::handle_options_request(&mut writer).await,
-            // Not found for other paths
-            _ => HttpResponse::send_not_found_response(&mut writer).await,
+            ("OPTIONS", _) => Some(RouteHandler::Options),
+            _ => None,
         }
     }
 
