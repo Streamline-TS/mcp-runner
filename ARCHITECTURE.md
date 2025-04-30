@@ -43,6 +43,11 @@ The library is structured into several core modules within the `src/` directory:
     *   Defines the `McpRunner` struct, which acts as the central orchestrator, managing multiple `ServerProcess` instances based on the loaded `Config`.
     *   Provides methods to start/stop servers and obtain `McpClient` instances.
 
+7.  **`proxy`**:
+    *   Provides an HTTP and Server-Sent Events (SSE) proxy for MCP servers.
+    *   Enables web clients to interact with MCP servers through a REST-like API.
+    *   Located in `src/proxy/`.
+
 ## High-Level Flow (Example: Calling a Tool)
 
 1.  **Initialization**: An `McpRunner` instance is created, typically from a `Config` (e.g., `McpRunner::from_config_file`).
@@ -71,6 +76,87 @@ The library is structured into several core modules within the `src/` directory:
     *   `McpRunner` retrieves and removes the `ServerProcess`.
     *   `ServerProcess::stop()` attempts to kill the child process and waits for it to exit.
     *   The `StdioTransport`'s `reader_task` eventually terminates as stdout closes.
+
+## SSE Proxy Architecture
+
+The SSE Proxy module (`src/proxy/`) enables web clients to interact with MCP servers through an HTTP interface and Server-Sent Events (SSE). It serves as a bridge between web applications and the MCP protocol, translating HTTP requests into MCP operations.
+
+### Key Components
+
+1.  **`SSEProxy` (`src/proxy/sse_proxy.rs`)**: 
+    *   The main proxy server implementation that listens for HTTP connections.
+    *   Manages communication between the `McpRunner` and client connections.
+    *   Handles authentication, request routing, and server information updates.
+
+2.  **`ServerManager` (`src/proxy/server_manager.rs`)**: 
+    *   Maintains a cache of server information and status.
+    *   Provides methods to update and access server metadata.
+
+3.  **`EventManager` (`src/proxy/events.rs`)**: 
+    *   Manages Server-Sent Events (SSE) for broadcasting updates to connected clients.
+    *   Handles event generation for tool call responses, errors, and server status changes.
+
+4.  **`ConnectionHandler` (`src/proxy/connection_handler.rs`)**: 
+    *   Processes individual client HTTP connections.
+    *   Routes requests to appropriate handlers based on the URL path.
+
+5.  **`HttpHandlers` (`src/proxy/http_handlers.rs`)**: 
+    *   Contains handlers for different API endpoints (servers, tools, events, resources).
+    *   Translates HTTP requests into MCP operations.
+
+### Communication Flow
+
+1.  **Proxy Startup**:
+    *   An `SSEProxyHandle` is created by calling `SSEProxy::start_proxy` with the required configuration and access to the `McpRunner`.
+    *   The proxy starts listening on the configured address and port.
+    *   A communication channel is established between the `McpRunner` and the proxy for server status updates.
+
+2.  **Client Connection**:
+    *   When a client connects, a new `ConnectionHandler` is spawned to handle the HTTP request.
+    *   Authentication is verified against the configured bearer token if enabled.
+    *   The request is routed to the appropriate handler based on the URL path.
+
+3.  **SSE Subscription**:
+    *   Clients can subscribe to server events via the `/events` endpoint.
+    *   The `EventManager` maintains a list of active subscribers and broadcasts events.
+    *   Events include server status changes, tool call responses, and errors.
+
+4.  **Tool Calls**:
+    *   Clients can make tool calls to MCP servers via the `/servers/{server}/tools/{tool}` endpoint.
+    *   The proxy retrieves the corresponding `McpClient` from the runner.
+    *   Tool calls are forwarded to the server, and responses are sent back to the client as SSE events.
+
+5.  **Server Updates**:
+    *   The `McpRunner` sends server status updates to the proxy via the `SSEProxyHandle`.
+    *   Updates are processed by the `ServerManager` and broadcast as events to subscribed clients.
+
+6.  **Proxy Shutdown**:
+    *   The `SSEProxyHandle::shutdown()` method signals the proxy to stop accepting new connections.
+    *   The proxy gracefully terminates all active connections and background tasks.
+
+### Security Considerations
+
+*   **Authentication**: The proxy supports bearer token authentication for securing access. More authentication methods to come.
+*   **Server Allowlist**: Only servers explicitly allowed in the configuration can be accessed.
+*   **Error Handling**: Comprehensive error handling prevents information leakage and improves reliability.
+
+### Configuration
+
+The SSE proxy is configured via the `SSEProxyConfig` struct in the configuration file:
+
+```json
+{
+  "sseProxy": {
+    "address": "127.0.0.1",
+    "port": 3000,
+    "authenticate": {
+      "bearer": {
+        "token": "your-secret-token"
+      }
+    }
+  }
+}
+```
 
 ## Key Concepts
 
