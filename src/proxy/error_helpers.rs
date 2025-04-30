@@ -38,10 +38,11 @@ pub async fn send_jsonrpc_error(
         Err(e) => {
             tracing::error!(error = %e, "Failed to serialize JSON-RPC error response");
             HttpResponse::send_error_response(
-                writer, 
-                500, 
-                "Internal server error during error reporting"
-            ).await
+                writer,
+                500,
+                "Internal server error during error reporting",
+            )
+            .await
         }
     }
 }
@@ -68,7 +69,8 @@ pub async fn send_parse_error(
         -32700, // Parse error
         &format!("Parse error: {}", error),
         None,
-    ).await
+    )
+    .await
 }
 
 /// Send a JSON-RPC method not found error response
@@ -95,7 +97,8 @@ pub async fn send_method_not_found(
         -32601, // Method not found
         &format!("Method not found (expected '{}')", expected),
         None,
-    ).await
+    )
+    .await
 }
 
 /// Send a JSON-RPC invalid parameter error response
@@ -124,7 +127,8 @@ pub async fn send_invalid_param(
         -32602, // Invalid params
         &format!("Invalid '{}' parameter: {}", param_name, expected),
         None,
-    ).await
+    )
+    .await
 }
 
 /// Send a JSON-RPC missing parameters error response
@@ -149,7 +153,8 @@ pub async fn send_missing_params(
         -32602, // Invalid params
         "Missing required parameters",
         None,
-    ).await
+    )
+    .await
 }
 
 /// Send a JSON-RPC internal error response
@@ -176,7 +181,8 @@ pub async fn send_internal_error<E: std::fmt::Display>(
         -32000, // Server error
         &format!("Internal server error: {}", error),
         None,
-    ).await
+    )
+    .await
 }
 
 /// Helper for extracting a string parameter from JSON-RPC params
@@ -190,5 +196,8 @@ pub async fn send_internal_error<E: std::fmt::Display>(
 ///
 /// An Option with the string value, or None if not found/not a string
 pub fn get_string_param(params: &Value, name: &str) -> Option<String> {
-    params.get(name).and_then(|v| v.as_str()).map(|s| s.to_string())
+    params
+        .get(name)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }

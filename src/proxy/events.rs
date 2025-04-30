@@ -76,8 +76,14 @@ impl EventManager {
             response,
         };
 
-        // Send the event with the correct type name
-        self.send_event("tool-response", &event_payload, Some(request_id));
+        // Serialize the event
+        if let Ok(json_data) = serde_json::to_string(&event_payload) {
+            // Create and send the SSE message
+            let message = SSEMessage::new("tool-response", &json_data, Some(request_id));
+            self.send_message(message);
+        } else {
+            tracing::error!("Failed to serialize tool response event");
+        }
     }
 
     /// Send a tool error event to all connected clients
@@ -97,8 +103,14 @@ impl EventManager {
             error: error.to_string(),
         };
 
-        // Send the event with the correct type name
-        self.send_event("tool-error", &event_payload, Some(request_id));
+        // Serialize the event
+        if let Ok(json_data) = serde_json::to_string(&event_payload) {
+            // Create and send the SSE message
+            let message = SSEMessage::new("tool-error", &json_data, Some(request_id));
+            self.send_message(message);
+        } else {
+            tracing::error!("Failed to serialize tool error event");
+        }
     }
 
     /// Send a server status update event to all connected clients
@@ -116,8 +128,50 @@ impl EventManager {
             status: status.to_string(),
         };
 
-        // Send the event with the correct type name
-        self.send_event("server-status", &event_payload, None);
+        // Serialize the event
+        if let Ok(json_data) = serde_json::to_string(&event_payload) {
+            // Create and send the SSE message
+            let message = SSEMessage::new("server-status", &json_data, None);
+            self.send_message(message);
+        } else {
+            tracing::error!("Failed to serialize server status event");
+        }
+    }
+
+    /// Helper method to send an SSE message with retries
+    fn send_message(&self, message: SSEMessage) {
+        // Only try to send if there are receivers
+        if self.sender.receiver_count() > 0 {
+            // Try multiple times if broadcasting fails but there are still receivers
+            let mut retry_count = 0;
+            const MAX_RETRIES: usize = 3;
+
+            while retry_count < MAX_RETRIES {
+                match self.sender.send(message.clone()) {
+                    Ok(_) => {
+                        if retry_count > 0 {
+                            tracing::debug!(
+                                retries = retry_count,
+                                "Successfully broadcast SSE event after retries"
+                            );
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        retry_count += 1;
+                        if retry_count < MAX_RETRIES {
+                            tracing::warn!(attempt = retry_count, error = %e, "Failed to broadcast SSE event, will retry");
+                            // Short delay before retry to allow system to recover
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        } else {
+                            tracing::error!(error = %e, "Failed to broadcast SSE event after maximum retries");
+                        }
+                    }
+                }
+            }
+        } else {
+            tracing::debug!("No SSE event receivers, event dropped");
+        }
     }
 
     /// Handle SSE request stream for a connected client
@@ -197,54 +251,5 @@ impl EventManager {
         }
 
         Ok(())
-    }
-
-    // Private helper to send an event
-    // Takes a serializable payload (like SSEEvent)
-    fn send_event<T: serde::Serialize>(&self, event_type: &str, payload: &T, id: Option<&str>) {
-        match serde_json::to_string(payload) {
-            // Serialize the payload (SSEEvent)
-            Ok(json_data) => {
-                // Create the SSEMessage envelope with the serialized data
-                let message = SSEMessage::new(event_type, &json_data, id);
-
-                // Only try to send if there are receivers
-                if self.sender.receiver_count() > 0 {
-                    // Try multiple times if broadcasting fails but there are still receivers
-                    let mut retry_count = 0;
-                    const MAX_RETRIES: usize = 3;
-
-                    while retry_count < MAX_RETRIES {
-                        match self.sender.send(message.clone()) {
-                            Ok(_) => {
-                                // Successful send, we're done
-                                if retry_count > 0 {
-                                    tracing::debug!(
-                                        retries = retry_count,
-                                        "Successfully broadcast SSE event after retries"
-                                    );
-                                }
-                                return;
-                            }
-                            Err(e) => {
-                                retry_count += 1;
-                                if retry_count < MAX_RETRIES {
-                                    tracing::warn!(attempt = retry_count, error = %e, "Failed to broadcast SSE event, will retry");
-                                    // Short delay before retry to allow system to recover
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                } else {
-                                    tracing::error!(error = %e, "Failed to broadcast SSE event after maximum retries");
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    tracing::debug!("No SSE event receivers, event dropped");
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to serialize SSE event payload");
-            }
-        }
     }
 }

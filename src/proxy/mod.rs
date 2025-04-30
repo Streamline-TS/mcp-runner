@@ -43,8 +43,8 @@ pub use self::sse_proxy::SSEProxy;
 pub use self::types::{ResourceInfo, SSEEvent, SSEMessage, ServerInfo, ToolInfo};
 
 // Submodules
-pub mod events;
 pub mod error_helpers;
+pub mod events;
 pub mod http;
 pub mod http_handlers;
 pub mod sse_proxy;
