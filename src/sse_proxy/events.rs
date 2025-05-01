@@ -4,6 +4,7 @@
 //! using Actix Web's streaming capabilities.
 
 use crate::sse_proxy::types::{SSEEvent, SSEMessage};
+use crate::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcError, JsonRpcResponse}; // Import JSON-RPC types
 use actix_web::web::Bytes;
 use tokio::sync::broadcast;
 use tracing;
@@ -31,32 +32,64 @@ impl EventManager {
         self.sender.subscribe()
     }
 
-    /// Send a tool response event
+    /// Send a tool response event using JSON-RPC format
     pub fn send_tool_response(
         &self,
         request_id: &str,
-        server_id: &str,
-        tool_name: &str,
+        _server_id: &str, // No longer needed for the event payload itself
+        _tool_name: &str, // No longer needed for the event payload itself
         data: serde_json::Value,
     ) {
-        let event = SSEEvent::ToolResponse {
-            request_id: request_id.to_string(),
-            server_id: server_id.to_string(),
-            tool_name: tool_name.to_string(),
-            data,
-        };
-        self.create_and_send_event(event, Some(request_id));
+        // Construct a JSON-RPC success response
+        let response = JsonRpcResponse::success(request_id, data);
+
+        // Serialize the JSON-RPC response
+        match serde_json::to_string(&response) {
+            Ok(json_data) => {
+                // Create SSE message with event type "message" and request_id as SSE id
+                let message = SSEMessage::new("message", &json_data, Some(request_id));
+                self.send_sse_message(message, "message"); // Use helper to send
+            }
+            Err(e) => {
+                tracing::error!(error = %e, request_id = %request_id, "Failed to serialize JSON-RPC success response");
+            }
+        }
     }
 
-    /// Send a tool error event
+    /// Send a tool error event using JSON-RPC format
     pub fn send_tool_error(&self, request_id: &str, server_id: &str, tool_name: &str, error: &str) {
-        let event = SSEEvent::ToolError {
-            request_id: request_id.to_string(),
-            server_id: server_id.to_string(),
-            tool_name: tool_name.to_string(),
-            error: error.to_string(),
+        // Construct a JSON-RPC error object
+        // Using a generic error code -32000 for server error
+        // Optionally include more details in the 'data' field
+        let error_data = serde_json::json!({
+            "serverId": server_id,
+            "toolName": tool_name
+        });
+        let rpc_error = JsonRpcError {
+            code: -32000, // Example: Generic server error code
+            message: error.to_string(),
+            data: Some(error_data),
         };
-        self.create_and_send_event(event, Some(request_id));
+
+        // Construct a JSON-RPC error response
+        let response = JsonRpcResponse {
+            jsonrpc: JSON_RPC_VERSION.to_string(),
+            id: serde_json::Value::String(request_id.to_string()),
+            result: None,
+            error: Some(rpc_error),
+        };
+
+        // Serialize the JSON-RPC response
+        match serde_json::to_string(&response) {
+            Ok(json_data) => {
+                // Create SSE message with event type "message" and request_id as SSE id
+                let message = SSEMessage::new("message", &json_data, Some(request_id));
+                self.send_sse_message(message, "message"); // Use helper to send
+            }
+            Err(e) => {
+                tracing::error!(error = %e, request_id = %request_id, "Failed to serialize JSON-RPC error response");
+            }
+        }
     }
 
     /// Send a server status update event
@@ -66,7 +99,21 @@ impl EventManager {
             server_id: server_id.to_string(),
             status: status.to_string(),
         };
-        self.create_and_send_event(event, None);
+        // Serialize event payload to JSON
+        match serde_json::to_string(&event) {
+            Ok(json_data) => {
+                // Create SSE message with specific event type
+                let message = SSEMessage::new("server-status", &json_data, None);
+                self.send_sse_message(message, "server-status"); // Use helper to send
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    event_type = "server-status",
+                    "Failed to serialize SSE event payload"
+                );
+            }
+        }
     }
 
     /// Send a notification event
@@ -76,55 +123,46 @@ impl EventManager {
             message: message.to_string(),
             level: level.to_string(),
         };
-        self.create_and_send_event(event, None);
+        // Serialize event payload to JSON
+        match serde_json::to_string(&event) {
+            Ok(json_data) => {
+                // Create SSE message with specific event type
+                let message = SSEMessage::new("notification", &json_data, None);
+                self.send_sse_message(message, "notification"); // Use helper to send
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    event_type = "notification",
+                    "Failed to serialize SSE event payload"
+                );
+            }
+        }
     }
 
-    /// Helper to serialize, create, and send an SSE message
-    fn create_and_send_event(&self, event_payload: SSEEvent, request_id: Option<&str>) {
-        // Get event type name from the variant
-        let event_type_name = match &event_payload {
-            SSEEvent::ToolResponse { .. } => "tool-response",
-            SSEEvent::ToolError { .. } => "tool-error",
-            SSEEvent::ServerStatus { .. } => "server-status",
-            SSEEvent::Notification { .. } => "notification",
-        };
-
-        // Serialize event payload to JSON
-        match serde_json::to_string(&event_payload) {
-            Ok(json_data) => {
-                // Create SSE message
-                let message = SSEMessage::new(event_type_name, &json_data, request_id);
-
-                // Send message through broadcast channel
-                match self.sender.send(message) {
-                    Ok(receiver_count) => {
-                        if receiver_count > 0 {
-                            tracing::debug!(
-                                event_type = event_type_name,
-                                receivers = receiver_count,
-                                "SSE event sent to clients"
-                            );
-                        } else {
-                            tracing::trace!(
-                                event_type = event_type_name,
-                                "SSE event created but no clients connected"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            event_type = event_type_name,
-                            "Failed to broadcast SSE event"
-                        );
-                    }
+    /// Helper to send an SSE message via the broadcast channel
+    /// (Replaces the old create_and_send_event logic for broadcasting)
+    fn send_sse_message(&self, message: SSEMessage, event_type_name: &str) {
+        match self.sender.send(message) {
+            Ok(receiver_count) => {
+                if receiver_count > 0 {
+                    tracing::debug!(
+                        event_type = event_type_name,
+                        receivers = receiver_count,
+                        "SSE event sent to clients"
+                    );
+                } else {
+                    tracing::trace!(
+                        event_type = event_type_name,
+                        "SSE event created but no clients connected"
+                    );
                 }
             }
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     event_type = event_type_name,
-                    "Failed to serialize SSE event payload"
+                    "Failed to broadcast SSE event"
                 );
             }
         }

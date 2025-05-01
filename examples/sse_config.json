@@ -3,7 +3,7 @@
         "allowedServers": ["blahblah", "fetch"],
         "authenticate": {
             "bearer": {
-                "token": "your token"
+                "token": "your_token"
             }
         },
         "address": "127.0.0.1",
