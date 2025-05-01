@@ -18,8 +18,11 @@ categories = ["command-line-utilities", "asynchronous"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+actix-cors = "0.6.4"  # Updated to an available version
+actix-web = "4.3.1"   # Updated to a compatible version
 anyhow = "1.0.98"
 async-process = "2.3.0"
+async-stream = "0.3"
 async-trait = "0.1.88"
 futures = "0.3.30"
 futures-lite = "2.6.0"

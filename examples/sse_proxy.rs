@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
 
-    info!("Starting SSE proxy example");
+    info!("Starting Actix Web SSE proxy example");
 
     // Load config with SSE proxy settings
     let config_path = "examples/sse_config.json";
@@ -164,10 +164,10 @@ async fn main() -> Result<()> {
         }
 
         // Start the SSE proxy server - now using address and port from config
-        info!("Starting SSE proxy with settings from config file");
+        info!("Starting Actix Web-based SSE proxy with settings from config file");
         runner.start_sse_proxy().await?;
 
-        info!("SSE proxy started successfully!");
+        info!("Actix Web SSE proxy started successfully!");
         info!("Available HTTP endpoints:");
 
         // Using values from the example config file
@@ -184,6 +184,10 @@ async fn main() -> Result<()> {
             host, port
         );
         info!(
+            " - JSON-RPC tool call:          POST   http://{}:{}/jsonrpc",
+            host, port
+        );
+        info!(
             " - List all servers:            GET    http://{}:{}/servers",
             host, port
         );
@@ -196,7 +200,7 @@ async fn main() -> Result<()> {
             host, port
         );
         info!(
-            " - Get resource content:        GET    http://{}:{}/resource/SERVER_NAME/RESOURCE_URI",
+            " - Get resource content:        GET    http://{}:{}/servers/SERVER_NAME/resources/RESOURCE_NAME",
             host, port
         );
 
@@ -204,8 +208,16 @@ async fn main() -> Result<()> {
         info!("curl -X POST http://{}:{}/tool \\", host, port);
         info!("  -H \"Content-Type: application/json\" \\");
         info!(
-            "  -d '{{\"server\":\"fetch\", \"tool\":\"fetch\", \"args\":{{\"url\":\"https://example.com\"}}}}' "
+            "  -d '{{\"server\":\"fetch\", \"tool\":\"fetch\", \"args\":{{\"url\":\"https://example.com\"}}, \"requestId\":\"req-123\"}}' "
         );
+
+        info!("Example JSON-RPC tool call with curl:");
+        info!("curl -X POST http://{}:{}/jsonrpc \\", host, port);
+        info!("  -H \"Content-Type: application/json\" \\");
+        info!(
+            "  -d '{{\"jsonrpc\":\"2.0\", \"id\":\"req-123\", \"method\":\"fetch.fetch\", \"params\":{{\"url\":\"https://example.com\"}}}}' "
+        );
+
         info!("Example SSE client with curl:");
         info!("curl -N http://{}:{}/events", host, port);
 

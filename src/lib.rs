@@ -71,11 +71,12 @@ pub mod error;
 pub mod proxy;
 pub mod server;
 pub mod transport;
+pub mod sse_proxy; // New Actix Web-based SSE proxy implementation
 
 pub use client::McpClient; // Re-export McpClient as public
 pub use config::Config;
 pub use error::{Error, Result};
-pub use proxy::sse_proxy::SSEProxyHandle; // Update to use SSEProxyHandle
+pub use sse_proxy::SSEProxyHandle; // Use our new Actix Web-based SSE proxy handle
 pub use server::{ServerId, ServerProcess, ServerStatus};
 
 use std::collections::HashMap;
@@ -83,8 +84,8 @@ use std::path::Path;
 use std::sync::Arc;
 use transport::StdioTransport;
 
-use proxy::sse_proxy::{SSEProxy, SSEProxyRunnerAccess}; // Import the new types
-use proxy::types::ServerInfo;
+use sse_proxy::{SSEProxy, SSEProxyRunnerAccess}; // Use our new Actix Web-based SSE proxy types
+use sse_proxy::types::ServerInfo;
 
 /// Configure and run MCP servers
 ///
