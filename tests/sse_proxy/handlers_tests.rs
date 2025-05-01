@@ -1,45 +1,22 @@
 #![cfg(test)]
 
 use actix_web::{App, test, web};
-use mcp_runner::server::ServerId;
 use mcp_runner::sse_proxy::handlers;
 use mcp_runner::sse_proxy::types::ServerInfo;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
-// Create a mock ServerId that resembles the real one
-#[derive(Clone, Copy, Debug)]
-struct MockServerId(Uuid);
-
-impl From<MockServerId> for ServerId {
-    fn from(_mock: MockServerId) -> Self {
-        // We can't construct ServerId directly since the constructor is private
-        // This is just for testing and will be caught if the internals change
-        unsafe { std::mem::transmute::<Uuid, ServerId>(Uuid::new_v4()) }
-    }
+// Test context to avoid having to modify the proxy struct
+struct TestContext {
+    server_info: Arc<Mutex<HashMap<String, ServerInfo>>>,
 }
 
-// Define a struct that implements the RunnerAccess trait methods
-struct MockRunnerAccess {
-    servers: HashMap<String, ServerId>,
-    allowed_servers: Option<Vec<String>>,
-}
-
-impl MockRunnerAccess {
-    fn new() -> Self {
-        let mut servers = HashMap::new();
-        servers.insert(
-            "test-server".to_string(),
-            MockServerId(Uuid::new_v4()).into(),
-        );
-
-        Self {
-            servers,
-            allowed_servers: None,
-        }
+// Implement the get_server_info method to match what handlers.rs expects
+impl TestContext {
+    fn get_server_info(&self) -> Arc<Mutex<HashMap<String, ServerInfo>>> {
+        self.server_info.clone()
     }
 }
 
@@ -62,18 +39,6 @@ async fn create_test_data() -> web::Data<Arc<Mutex<TestContext>>> {
     let test_context = TestContext { server_info };
 
     web::Data::new(Arc::new(Mutex::new(test_context)))
-}
-
-// Test context to avoid having to modify the proxy struct
-struct TestContext {
-    server_info: Arc<Mutex<HashMap<String, ServerInfo>>>,
-}
-
-// Implement the get_server_info method to match what handlers.rs expects
-impl TestContext {
-    fn get_server_info(&self) -> Arc<Mutex<HashMap<String, ServerInfo>>> {
-        self.server_info.clone()
-    }
 }
 
 #[actix_web::test]

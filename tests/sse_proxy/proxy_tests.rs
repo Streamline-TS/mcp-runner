@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use mcp_runner::config::SSEProxyConfig;
 use mcp_runner::sse_proxy::events::EventManager;
 use mcp_runner::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcResponse};
 use serde_json::json;
@@ -76,19 +75,11 @@ impl MockClient {
 struct TestProxy {
     server_access: MockServerAccess,
     clients: HashMap<String, MockClient>,
-    config: SSEProxyConfig,
     event_manager: EventManager,
 }
 
 impl TestProxy {
     fn new() -> Self {
-        let config = SSEProxyConfig {
-            address: "127.0.0.1".to_string(),
-            port: 8090,
-            authenticate: None,
-            allowed_servers: None,
-        };
-
         let mut clients = HashMap::new();
         clients.insert("test-server".to_string(), MockClient::new());
         clients.insert("fetch".to_string(), MockClient::new());
@@ -96,7 +87,6 @@ impl TestProxy {
         Self {
             server_access: MockServerAccess::new(),
             clients,
-            config,
             event_manager: EventManager::new(100),
         }
     }
@@ -154,13 +144,6 @@ impl TestProxy {
                 })
             })
             .collect()
-    }
-
-    fn list_tools(&self, _server_name: &str) -> Result<Vec<serde_json::Value>, String> {
-        Ok(vec![
-            json!({"name": "echo", "description": "Echo back the input"}),
-            json!({"name": "fetch", "description": "Fetch a URL"}),
-        ])
     }
 }
 
