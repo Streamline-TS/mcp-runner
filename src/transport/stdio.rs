@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{self, Instrument, span};
-use uuid::Uuid; // Remove unused Span import
+use uuid::Uuid;
 
 /// StdioTransport provides communication with an MCP server via standard I/O.
 ///
@@ -114,8 +114,23 @@ impl StdioTransport {
                         if buf[0] == b'\n' {
                             // Process the line
                             if let Ok(line) = String::from_utf8(buffer.clone()) {
-                                tracing::trace!(output = "stdout", line = %line, "Received line");
-                                match serde_json::from_str::<JsonRpcMessage>(&line) {
+                                let trimmed_line = line.trim();
+                                if trimmed_line.is_empty() {
+                                    // Ignore empty lines
+                                    buffer.clear();
+                                    continue;
+                                }
+
+                                // Check if the line looks like a JSON object before attempting to parse
+                                if !trimmed_line.starts_with('{') {
+                                    tracing::trace!(output = "stdout", line = %trimmed_line, "Ignoring non-JSON line");
+                                    buffer.clear();
+                                    continue;
+                                }
+
+                                // Attempt to parse as JSON-RPC
+                                tracing::trace!(output = "stdout", line = %trimmed_line, "Attempting to parse line as JSON-RPC");
+                                match serde_json::from_str::<JsonRpcMessage>(trimmed_line) {
                                     Ok(JsonRpcMessage::Response(response)) => {
                                         // Get ID as string
                                         let id_str = match &response.id {
@@ -148,9 +163,13 @@ impl StdioTransport {
                                         tracing::debug!(method = %notif.method, "Received JSON-RPC notification from server");
                                     }
                                     Err(e) => {
-                                        tracing::warn!(line = %line, error = %e, "Failed to parse line as JSON-RPC message");
+                                        // Keep WARN for lines that start like JSON but fail to parse
+                                        tracing::warn!(line = %trimmed_line, error = %e, "Failed to parse potential JSON-RPC message");
                                     }
                                 }
+                            } else {
+                                // Log if line is not valid UTF-8
+                                tracing::warn!(bytes = ?buffer, "Received non-UTF8 data on stdout");
                             }
                             buffer.clear();
                         } else {
