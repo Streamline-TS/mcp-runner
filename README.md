@@ -206,7 +206,7 @@ let result = client.call_tool("fetch", &json!({
 
 ## SSE Proxy
 
-The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers through HTTP and receive real-time updates using the Server-Sent Events protocol. 
+The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers through HTTP and receive real-time updates using the Server-Sent Events protocol. It is implemented using Actix Web for high performance, reliability, and maintainability.
 
 ### Features
 
@@ -215,6 +215,7 @@ The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers thro
 - **Server Access Control**: Restrict which servers can be accessed through the proxy
 - **Event Streaming**: Real-time updates from MCP servers to clients via SSE
 - **Cross-Origin Support**: Built-in CORS support for web browser clients
+- **Performance**: High-performance HTTP server built on Actix Web
 
 ### Starting the Proxy
 

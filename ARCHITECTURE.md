@@ -79,42 +79,41 @@ The library is structured into several core modules within the `src/` directory:
 
 ## SSE Proxy Architecture
 
-The SSE Proxy module (`src/proxy/`) enables web clients to interact with MCP servers through an HTTP interface and Server-Sent Events (SSE). It serves as a bridge between web applications and the MCP protocol, translating HTTP requests into MCP operations.
+The SSE Proxy module (`src/sse_proxy/`) enables web clients to interact with MCP servers through an HTTP interface and Server-Sent Events (SSE). It serves as a bridge between web applications and the MCP protocol, translating HTTP requests into MCP operations. This implementation uses Actix Web for improved performance, reliability, and maintainability.
 
 ### Key Components
 
-1.  **`SSEProxy` (`src/proxy/sse_proxy.rs`)**: 
-    *   The main proxy server implementation that listens for HTTP connections.
+1.  **`SSEProxy` (`src/sse_proxy/proxy.rs`)**: 
+    *   The main proxy server implementation built on Actix Web.
     *   Manages communication between the `McpRunner` and client connections.
-    *   Handles authentication, request routing, and server information updates.
+    *   Handles server information updates and lifecycle management.
+    *   Provides access to the runner for handling requests.
 
-2.  **`ServerManager` (`src/proxy/server_manager.rs`)**: 
-    *   Maintains a cache of server information and status.
-    *   Provides methods to update and access server metadata.
-
-3.  **`EventManager` (`src/proxy/events.rs`)**: 
+2.  **`EventManager` (`src/sse_proxy/events.rs`)**: 
     *   Manages Server-Sent Events (SSE) for broadcasting updates to connected clients.
     *   Handles event generation for tool call responses, errors, and server status changes.
 
-4.  **`ConnectionHandler` (`src/proxy/connection_handler.rs`)**: 
-    *   Processes individual client HTTP connections.
-    *   Routes requests to appropriate handlers based on the URL path.
-
-5.  **`HttpHandlers` (`src/proxy/http_handlers.rs`)**: 
-    *   Contains handlers for different API endpoints (servers, tools, events, resources).
+3.  **`Handlers` (`src/sse_proxy/handlers.rs`)**: 
+    *   Contains Actix Web handlers for different API endpoints (servers, tools, events, resources).
     *   Translates HTTP requests into MCP operations.
+
+4.  **`Authentication` (`src/sse_proxy/auth.rs`)**: 
+    *   Implements Actix Web middleware for securing access to the proxy.
+    *   Currently supports bearer token authentication.
+
+5.  **`Types` (`src/sse_proxy/types.rs`)**: 
+    *   Contains shared data structures used across the SSE proxy components.
 
 ### Communication Flow
 
 1.  **Proxy Startup**:
     *   An `SSEProxyHandle` is created by calling `SSEProxy::start_proxy` with the required configuration and access to the `McpRunner`.
-    *   The proxy starts listening on the configured address and port.
+    *   Actix Web server starts listening on the configured address and port.
     *   A communication channel is established between the `McpRunner` and the proxy for server status updates.
 
 2.  **Client Connection**:
-    *   When a client connects, a new `ConnectionHandler` is spawned to handle the HTTP request.
-    *   Authentication is verified against the configured bearer token if enabled.
-    *   The request is routed to the appropriate handler based on the URL path.
+    *   When a client connects, Actix Web routes the request to the appropriate handler.
+    *   Authentication is verified through middleware against the configured bearer token if enabled.
 
 3.  **SSE Subscription**:
     *   Clients can subscribe to server events via the `/events` endpoint.
@@ -122,22 +121,23 @@ The SSE Proxy module (`src/proxy/`) enables web clients to interact with MCP ser
     *   Events include server status changes, tool call responses, and errors.
 
 4.  **Tool Calls**:
-    *   Clients can make tool calls to MCP servers via the `/servers/{server}/tools/{tool}` endpoint.
+    *   Clients can make tool calls to MCP servers via the `/tool` endpoint or the `/jsonrpc` endpoint.
     *   The proxy retrieves the corresponding `McpClient` from the runner.
-    *   Tool calls are forwarded to the server, and responses are sent back to the client as SSE events.
+    *   Tool calls are forwarded to the server, and responses are sent back to the client via HTTP response or as SSE events.
 
 5.  **Server Updates**:
     *   The `McpRunner` sends server status updates to the proxy via the `SSEProxyHandle`.
-    *   Updates are processed by the `ServerManager` and broadcast as events to subscribed clients.
+    *   Updates are processed and broadcast as events to subscribed clients.
 
 6.  **Proxy Shutdown**:
     *   The `SSEProxyHandle::shutdown()` method signals the proxy to stop accepting new connections.
-    *   The proxy gracefully terminates all active connections and background tasks.
+    *   Actix Web server is gracefully shut down, terminating all active connections and tasks.
 
 ### Security Considerations
 
-*   **Authentication**: The proxy supports bearer token authentication for securing access. More authentication methods to come.
+*   **Authentication**: The proxy supports bearer token authentication for securing access using Actix Web middleware.
 *   **Server Allowlist**: Only servers explicitly allowed in the configuration can be accessed.
+*   **CORS Support**: Built-in Cross-Origin Resource Sharing support for web browser clients.
 *   **Error Handling**: Comprehensive error handling prevents information leakage and improves reliability.
 
 ### Configuration

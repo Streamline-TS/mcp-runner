@@ -4,7 +4,9 @@
 //! supported by the SSE proxy, including SSE events streaming, tool calls,
 //! and server information retrieval.
 
+use crate::client::McpClient;
 use crate::error::{Error, Result};
+use crate::server::ServerId;
 use crate::sse_proxy::events::EventManager;
 use crate::sse_proxy::proxy::SSEProxy;
 use crate::sse_proxy::types::{ResourceInfo, ToolInfo};
@@ -29,6 +31,54 @@ struct ResourceResponse {
     content_type: String,
     // Assuming data is returned as a string (potentially base64 for binary)
     data: String,
+}
+
+/// Helper function to validate server, retrieve client and initialize it
+/// Returns a tuple of (client, server_id, server_id_str) or an Error
+async fn get_validated_client(
+    proxy: &SSEProxy,
+    server_name: &str,
+) -> Result<(McpClient, ServerId, String)> {
+    // Check if server is allowed
+    if let Some(allowed_servers) = (proxy.get_runner_access().get_allowed_servers)() {
+        if !allowed_servers.contains(&server_name.to_string()) {
+            return Err(Error::Unauthorized(format!(
+                "Server '{}' not in allowed list",
+                server_name
+            )));
+        }
+    }
+
+    // Get server ID
+    let server_id = match (proxy.get_runner_access().get_server_id)(server_name) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(server = %server_name, error = %e, "Server not found");
+            return Err(e);
+        }
+    };
+    let server_id_str = format!("{:?}", server_id);
+
+    // Get client
+    let client = match (proxy.get_runner_access().get_client)(server_id) {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
+            return Err(e);
+        }
+    };
+
+    // Initialize client
+    client.initialize().await?;
+
+    Ok((client, server_id, server_id_str))
+}
+
+/// Helper function to create a JsonRPC error response
+fn create_jsonrpc_error(request_id: Value, code: i32, message: String) -> HttpResponse {
+    let error_response = JsonRpcResponse::error(request_id, code, message, None);
+
+    HttpResponse::InternalServerError().json(error_response)
 }
 
 /// Request body for tool calls
@@ -216,36 +266,7 @@ pub async fn list_server_tools(
     let server_name = &path.0;
     let proxy = proxy.lock().await;
 
-    // Check if server is allowed
-    if let Some(allowed_servers) = (proxy.get_runner_access().get_allowed_servers)() {
-        if !allowed_servers.contains(&server_name.to_string()) {
-            return Err(Error::Unauthorized(format!(
-                "Server '{}' not in allowed list",
-                server_name
-            )));
-        }
-    }
-
-    // Get server ID
-    let server_id = match (proxy.get_runner_access().get_server_id)(server_name) {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::warn!(server = %server_name, error = %e, "Server not found");
-            return Err(e);
-        }
-    };
-
-    // Get client
-    let client = match (proxy.get_runner_access().get_client)(server_id) {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-            return Err(e);
-        }
-    };
-
-    // Initialize client
-    client.initialize().await?;
+    let (client, _, _) = get_validated_client(&proxy, server_name).await?;
 
     // List tools
     let tools = client.list_tools().await?;
@@ -278,36 +299,7 @@ pub async fn list_server_resources(
     let server_name = &path.0;
     let proxy = proxy.lock().await;
 
-    // Check if server is allowed
-    if let Some(allowed_servers) = (proxy.get_runner_access().get_allowed_servers)() {
-        if !allowed_servers.contains(&server_name.to_string()) {
-            return Err(Error::Unauthorized(format!(
-                "Server '{}' not in allowed list",
-                server_name
-            )));
-        }
-    }
-
-    // Get server ID
-    let server_id = match (proxy.get_runner_access().get_server_id)(server_name) {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::warn!(server = %server_name, error = %e, "Server not found");
-            return Err(e);
-        }
-    };
-
-    // Get client
-    let client = match (proxy.get_runner_access().get_client)(server_id) {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-            return Err(e);
-        }
-    };
-
-    // Initialize client
-    client.initialize().await?;
+    let (client, _, _) = get_validated_client(&proxy, server_name).await?;
 
     // List resources
     let resources_result = client.list_resources().await;
@@ -354,36 +346,7 @@ pub async fn get_server_resource(
     let (server_name, resource_name) = (&path.0, &path.1);
     let proxy = proxy.lock().await;
 
-    // Check if server is allowed
-    if let Some(allowed_servers) = (proxy.get_runner_access().get_allowed_servers)() {
-        if !allowed_servers.contains(&server_name.to_string()) {
-            return Err(Error::Unauthorized(format!(
-                "Server '{}' not in allowed list",
-                server_name
-            )));
-        }
-    }
-
-    // Get server ID
-    let server_id = match (proxy.get_runner_access().get_server_id)(server_name) {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::warn!(server = %server_name, error = %e, "Server not found");
-            return Err(e);
-        }
-    };
-
-    // Get client
-    let client = match (proxy.get_runner_access().get_client)(server_id) {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-            return Err(e);
-        }
-    };
-
-    // Initialize client
-    client.initialize().await?;
+    let (client, _, _) = get_validated_client(&proxy, server_name).await?;
 
     // Get the resource by deserializing into ResourceResponse
     let resource_response: ResourceResponse = client.get_resource(resource_name).await?;
@@ -456,60 +419,14 @@ pub async fn tool_call_jsonrpc(
     // Process the tool call
     let proxy_instance = proxy.lock().await;
 
-    // Check if server is allowed
-    if let Some(allowed_servers) = (proxy_instance.get_runner_access().get_allowed_servers)() {
-        if !allowed_servers.contains(&server_name.to_string()) {
-            let error_response = JsonRpcResponse::error(
-                request_id,
-                -32000,
-                format!("Server '{}' not in allowed list", server_name),
-                None,
-            );
-            return Ok(HttpResponse::Forbidden().json(error_response));
-        }
-    }
-
-    // Get server ID
-    let server_id = match (proxy_instance.get_runner_access().get_server_id)(server_name) {
-        Ok(id) => id,
+    let (client, _, _) = match get_validated_client(&proxy_instance, server_name).await {
+        Ok(result) => result,
         Err(e) => {
-            tracing::warn!(server = %server_name, error = %e, "Server not found");
-            let error_response = JsonRpcResponse::error(
-                request_id,
-                -32000,
-                format!("Server not found: {}", e),
-                None,
-            ); // Add None as the data parameter
-            return Ok(HttpResponse::NotFound().json(error_response));
+            let error_response =
+                create_jsonrpc_error(request_id, -32000, format!("Validation failed: {}", e));
+            return Ok(error_response);
         }
     };
-
-    // Get client
-    let client = match (proxy_instance.get_runner_access().get_client)(server_id) {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!(server_id = ?server_id, error = %e, "Failed to get client");
-            let error_response = JsonRpcResponse::error(
-                request_id,
-                -32000,
-                format!("Failed to get client: {}", e),
-                None,
-            ); // Add None as the data parameter
-            return Ok(HttpResponse::InternalServerError().json(error_response));
-        }
-    };
-
-    // Initialize the client
-    if let Err(e) = client.initialize().await {
-        tracing::error!(error = %e, "Failed to initialize client");
-        let error_response = JsonRpcResponse::error(
-            request_id,
-            -32000,
-            format!("Failed to initialize client: {}", e),
-            None, // Add None as the data parameter
-        );
-        return Ok(HttpResponse::InternalServerError().json(error_response));
-    }
 
     // Call the tool
     match client.call_tool(tool_name, &args).await {
@@ -524,13 +441,9 @@ pub async fn tool_call_jsonrpc(
                 error = %e,
                 "Tool call failed"
             );
-            let error_response = JsonRpcResponse::error(
-                request_id,
-                -32000,
-                format!("Tool call failed: {}", e),
-                None,
-            );
-            Ok(HttpResponse::InternalServerError().json(error_response))
+            let error_response =
+                create_jsonrpc_error(request_id, -32000, format!("Tool call failed: {}", e));
+            Ok(error_response)
         }
     }
 }
