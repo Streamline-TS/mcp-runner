@@ -1,11 +1,11 @@
 [package]
 name = "mcp-runner"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A Rust library for running and interacting with Model Context Protocol (MCP) servers locally"
 authors = ["Your Name <your.email@example.com>"]
 license = "MIT"
-repository = "https://github.com/yourusername/mcp-runner"
+repository = "https://github.com/Streamline-TS/mcp-runner"
 documentation = "https://docs.rs/mcp-runner"
 readme = "README.md"
 keywords = ["mcp", "protocol", "model", "server", "api"]
