@@ -147,8 +147,9 @@ The SSE proxy is configured via the `SSEProxyConfig` struct in the configuration
 ```json
 {
   "sseProxy": {
-    "address": "127.0.0.1",
-    "port": 3000,
+    "address": "127.0.0.1",  // Default value if omitted
+    "port": 3000,            // Default value if omitted
+    "workers": 4,            // Default value if omitted - controls Actix Web worker threads
     "authenticate": {
       "bearer": {
         "token": "your-secret-token"

@@ -4,7 +4,7 @@
 //! including the main proxy server, runner access functions, and proxy handle.
 
 use crate::client::McpClient;
-use crate::config::SSEProxyConfig;
+use crate::config::{DEFAULT_WORKERS, SSEProxyConfig};
 use crate::error::{Error, Result};
 use crate::server::ServerId;
 use crate::sse_proxy::auth::Authentication;
@@ -237,6 +237,7 @@ impl SSEProxy {
     ) -> Result<SSEProxyHandle> {
         // Create channel for communication between McpRunner and proxy
         let (server_tx, server_rx) = mpsc::channel(32);
+        let server_tx_clone = server_tx.clone();
 
         // Create the shutdown flag
         let shutdown_flag = Arc::new(AtomicBool::new(false));
@@ -281,33 +282,8 @@ impl SSEProxy {
             );
         } // Lock is released here when server_info goes out of scope
 
-        // Start the proxy in a background task
-        let handle = tokio::spawn(async move {
-            if let Err(e) = proxy.run().await {
-                tracing::error!(error = %e, "SSE proxy server error");
-            }
-        });
-
-        // Return a handle to control the proxy
-        Ok(SSEProxyHandle::new(
-            server_tx,
-            handle,
-            config,
-            shutdown_flag_clone,
-        ))
-    }
-
-    /// Run the SSE proxy server
-    ///
-    /// This is the main loop for the proxy server that handles both
-    /// the Actix Web server and the channel that receives server information updates.
-    ///
-    /// # Returns
-    ///
-    /// A `Result<()>` indicating success or failure
-    async fn run(&mut self) -> Result<()> {
         // Parse the socket address from the config
-        let addr_str = format!("{}:{}", self.config.address, self.config.port);
+        let addr_str = format!("{}:{}", proxy.config.address, proxy.config.port);
         let addr = match addr_str.to_socket_addrs() {
             Ok(mut addrs) => match addrs.next() {
                 Some(addr) => addr,
@@ -329,34 +305,33 @@ impl SSEProxy {
         tracing::info!(address = %addr_str, "Starting SSE proxy server with Actix Web");
 
         // Share the event manager and server info via Actix Data
-        let event_manager = Data::new(self.event_manager.clone());
-        let config = Arc::new(self.config.clone());
+        let event_manager = Data::new(proxy.event_manager.clone());
+        let config_arc = Arc::new(proxy.config.clone());
 
         // Create copies of the fields needed for the handler
-        let runner_access = self.runner_access.clone();
-        let server_info = self.server_info.clone();
-        let event_mgr = self.event_manager.clone();
-        let shutdown_flag = self.shutdown_flag.clone();
+        let runner_access_for_handlers = proxy.runner_access.clone();
+        let server_info_for_handlers = proxy.server_info.clone();
+        let event_mgr_for_handlers = proxy.event_manager.clone();
+        let shutdown_flag_for_handlers = proxy.shutdown_flag.clone();
 
         // Create a proxy data reference for handlers to use by creating a new SSEProxy instance
-        // instead of trying to clone self (which would move self)
         let proxy_for_handlers = SSEProxy {
-            config: self.config.clone(),
-            runner_access,
-            event_manager: event_mgr,
-            server_info,
+            config: proxy.config.clone(),
+            runner_access: runner_access_for_handlers,
+            event_manager: event_mgr_for_handlers,
+            server_info: server_info_for_handlers,
             // Create a dummy receiver - the real one stays with self
             server_rx: {
                 let (_, rx) = mpsc::channel::<ServerInfoUpdate>(1);
                 rx
             },
-            shutdown_flag,
+            shutdown_flag: shutdown_flag_for_handlers,
         };
 
         let proxy_data = Data::new(Arc::new(Mutex::new(proxy_for_handlers)));
 
-        // Start the Actix Web server
-        let server = HttpServer::new(move || {
+        // Create the HTTP server builder
+        let mut server_builder = HttpServer::new(move || {
             // Configure CORS
             let cors = Cors::default()
                 .allow_any_origin()
@@ -365,14 +340,14 @@ impl SSEProxy {
                 .max_age(3600);
 
             // Configure authentication middleware if required
-            let auth_middleware = Authentication::new(config.clone());
+            let auth_middleware = Authentication::new(config_arc.clone());
 
             App::new()
                 .wrap(middleware::Logger::default())
                 .wrap(cors)
                 .app_data(event_manager.clone()) // For sse_events handler
                 .app_data(proxy_data.clone()) // Pass the SSEProxy directly
-                .app_data(Data::new(config.clone())) // Pass config if needed by handlers
+                .app_data(Data::new(config_arc.clone())) // Pass config if needed by handlers
                 // Apply Authentication middleware unconditionally; its internal logic handles conditions
                 .wrap(auth_middleware)
                 // Define routes
@@ -393,18 +368,69 @@ impl SSEProxy {
                     "/servers/{server}/resources/{resource}",
                     web::get().to(handlers::get_server_resource),
                 )
-        })
-        .bind(addr)
-        .map_err(|e| Error::Other(format!("Failed to bind server: {}", e)))?
-        .run();
+        });
+
+        // Configure workers - use the config value if specified, otherwise default to 4
+        let workers = proxy.config.workers.unwrap_or(DEFAULT_WORKERS);
+        tracing::info!(workers = workers, "Setting number of Actix Web workers");
+        server_builder = server_builder.workers(workers);
+
+        // Bind to the address
+        let server = server_builder
+            .bind(addr)
+            .map_err(|e| Error::Other(format!("Failed to bind server: {}", e)))?
+            .run();
 
         // Get the server handle for stopping later
         let server_handle = server.handle();
 
-        // Start Actix Web server in a separate task
+        // Start two tasks:
+        // 1. Run the Actix server
         let server_task = tokio::spawn(server);
 
-        tracing::info!("SSE proxy server started, listening for connections");
+        // 2. Run the update processing loop
+        let update_handle = tokio::spawn(async move {
+            if let Err(e) = proxy.process_updates(server_handle).await {
+                tracing::error!(error = %e, "SSE proxy update processor error");
+            }
+        });
+
+        tracing::info!("SSE proxy server started successfully");
+
+        // Create the handle that will be returned to the caller
+        let handle = tokio::spawn(async move {
+            // Wait for both tasks to complete
+            let (server_result, update_result) = tokio::join!(server_task, update_handle);
+
+            // Log any errors
+            if let Err(e) = server_result {
+                tracing::error!(error = %e, "Actix server task error");
+            }
+            if let Err(e) = update_result {
+                tracing::error!(error = %e, "Update processor task error");
+            }
+
+            tracing::info!("SSE proxy server shut down completely");
+        });
+
+        // Return a handle to control the proxy
+        Ok(SSEProxyHandle::new(
+            server_tx_clone,
+            handle,
+            config,
+            shutdown_flag_clone,
+        ))
+    }
+
+    /// Process server information updates
+    ///
+    /// This is the main loop that processes server information updates from the channel.
+    ///
+    /// # Returns
+    ///
+    /// A `Result<()>` indicating success or failure
+    async fn process_updates(&mut self, server_handle: actix_web::dev::ServerHandle) -> Result<()> {
+        tracing::info!("SSE proxy update processor started");
 
         // Main loop to process server information updates
         while !self.shutdown_flag.load(Ordering::SeqCst) {
@@ -484,19 +510,7 @@ impl SSEProxy {
         tracing::info!("Stopping Actix Web server");
         server_handle.stop(true).await;
 
-        // Wait for the server task to complete
-        match tokio::time::timeout(std::time::Duration::from_secs(5), server_task).await {
-            Ok(result) => {
-                if let Err(e) = result {
-                    tracing::warn!("Error while joining Actix Web server task: {}", e);
-                }
-            }
-            Err(_) => {
-                tracing::warn!("Timeout waiting for Actix Web server task to finish");
-            }
-        }
-
-        tracing::info!("SSE proxy server shut down");
+        tracing::info!("SSE proxy update processor shut down");
         Ok(())
     }
 

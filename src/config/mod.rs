@@ -40,4 +40,5 @@ mod parser;
 pub mod validator;
 
 pub use parser::{AuthConfig, BearerAuthConfig, Config, SSEProxyConfig, ServerConfig};
+pub use parser::{DEFAULT_ADDRESS, DEFAULT_PORT, DEFAULT_WORKERS}; // Export the constants
 pub use validator::validate_config;

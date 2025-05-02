@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Constants for default configuration values
+/// Default address for the SSE proxy server (localhost)
+pub const DEFAULT_ADDRESS: &str = "127.0.0.1";
+/// Default port for the SSE proxy server
+pub const DEFAULT_PORT: u16 = 3000;
+/// Default number of worker threads for the Actix Web server
+pub const DEFAULT_WORKERS: usize = 4;
+
 /// Configuration for a single MCP server instance.
 ///
 /// This structure defines how to start and configure a specific MCP server process.
@@ -89,6 +97,7 @@ pub struct BearerAuthConfig {
 ///     authenticate: None,            // No authentication required
 ///     address: "127.0.0.1".to_string(),
 ///     port: 3000,
+///     workers: None,
 /// };
 /// ```
 ///
@@ -108,6 +117,7 @@ pub struct BearerAuthConfig {
 ///     authenticate: Some(auth_config),
 ///     address: "0.0.0.0".to_string(),  // Listen on all interfaces
 ///     port: 8080,
+///     workers: Some(4),
 /// };
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,16 +149,23 @@ pub struct SSEProxyConfig {
     /// ports above 1024 unless running with administrator/root privileges).
     #[serde(default = "default_port")]
     pub port: u16,
+
+    /// Number of worker threads for the Actix Web server
+    ///
+    /// When specified, Actix Web will use this number of workers.
+    /// If `None`, the default value of 4 workers will be used.
+    #[serde(default)]
+    pub workers: Option<usize>,
 }
 
 /// Default address for the SSE proxy
 fn default_address() -> String {
-    "127.0.0.1".to_string()
+    DEFAULT_ADDRESS.to_string()
 }
 
 /// Default port for the SSE proxy
 fn default_port() -> u16 {
-    3000
+    DEFAULT_PORT
 }
 
 impl Default for SSEProxyConfig {
@@ -158,6 +175,7 @@ impl Default for SSEProxyConfig {
             authenticate: None,
             address: default_address(),
             port: default_port(),
+            workers: None,
         }
     }
 }
@@ -194,7 +212,10 @@ impl Default for SSEProxyConfig {
 ///       "bearer": {
 ///         "token": "your_token"
 ///       }
-///     }
+///     },
+///     "address": "127.0.0.1",
+///     "port": 3000,
+///     "workers": 4
 ///   }
 /// }
 /// ```

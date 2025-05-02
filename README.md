@@ -248,8 +248,9 @@ Configure the SSE proxy in your configuration file:
 {
   "mcpServers": { /* server configs */ },
   "sseProxy": {
-    "address": "127.0.0.1",  // Listen address (localhost only)
-    "port": 3000,            // Port to listen on
+    "address": "127.0.0.1",  // Listen address (localhost only) - default if omitted
+    "port": 3000,            // Port to listen on - default if omitted
+    "workers": 4,            // Number of worker threads - default is 4 if omitted
     "allowedServers": [      // Optional: restrict which servers can be accessed
       "fetch", 
       "embedding"
