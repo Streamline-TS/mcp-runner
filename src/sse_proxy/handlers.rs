@@ -238,6 +238,7 @@ pub async fn tool_call(
 /// List available servers
 ///
 /// This handler returns a list of all available servers with their status.
+/// Only servers in the allowedServers list (if specified) are included.
 ///
 /// # Returns
 ///
@@ -246,8 +247,18 @@ pub async fn list_servers(proxy: Data<Arc<Mutex<SSEProxy>>>) -> impl Responder {
     let proxy = proxy.lock().await;
     let servers = proxy.get_server_info().lock().await;
 
-    // Convert to a vector for the response
-    let server_list: Vec<_> = servers.values().cloned().collect();
+    // Get the allowed servers list if configured
+    let allowed_servers = (proxy.get_runner_access().get_allowed_servers)();
+
+    // Filter servers based on allowedServers if configured
+    let server_list: Vec<_> = match &allowed_servers {
+        Some(allowed) => servers
+            .values()
+            .filter(|server| allowed.contains(&server.name))
+            .cloned()
+            .collect(),
+        None => servers.values().cloned().collect(),
+    };
 
     HttpResponse::Ok().json(server_list)
 }
