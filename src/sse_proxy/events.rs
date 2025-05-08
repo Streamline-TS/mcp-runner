@@ -28,27 +28,33 @@ impl EventManager {
     }
 
     /// Send initial configuration information to a newly connected client
-    pub fn send_initial_config(&self, message_url: &str, servers: &serde_json::Value) {
-        let event = SSEEvent::Endpoint {
-            message_url: message_url.to_string(),
-            servers: servers.clone(),
-        };
+    pub fn send_initial_config(&self, message_url: &str, _servers: &serde_json::Value) {
+        // The Python client expects just the URL path as the data, not JSON
+        // This matches the Python server implementation in SseServerTransport
 
-        // Serialize event payload to JSON
-        match serde_json::to_string(&event) {
-            Ok(json_data) => {
-                // Create SSE message with specific event type
-                let message = SSEMessage::new("endpoint", &json_data, None);
-                self.send_sse_message(message, "endpoint"); // Use helper to send
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    event_type = "endpoint",
-                    "Failed to serialize endpoint configuration event"
-                );
-            }
-        }
+        // Create SSE message with only the path as data
+        let message = SSEMessage::new("endpoint", message_url, None);
+
+        // Log the full SSE message for debugging
+        let formatted_message = Self::format_sse_message(&message);
+        let formatted_str = std::str::from_utf8(&formatted_message)
+            .unwrap_or("Could not convert SSE message to string");
+
+        tracing::debug!(
+            raw_message = %formatted_str,
+            event_type = "endpoint",
+            "Raw SSE message being sent to client"
+        );
+
+        // Log the message data
+        tracing::debug!(
+            event = "endpoint",
+            data = %message_url,
+            "Sending message URL path as data"
+        );
+
+        // Send the message
+        self.send_sse_message(message, "endpoint");
     }
 
     /// Subscribe to events

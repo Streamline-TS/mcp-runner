@@ -352,6 +352,7 @@ impl SSEProxy {
                 .wrap(auth_middleware)
                 // Define routes
                 .route("/sse", web::get().to(handlers::sse_main_endpoint))
+                .route("/sse/messages", web::post().to(handlers::sse_messages))
                 .route("/events", web::get().to(handlers::sse_events))
                 .route("/initialize", web::post().to(handlers::initialize))
                 .route("/tool", web::post().to(handlers::tool_call))

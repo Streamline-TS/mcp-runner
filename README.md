@@ -22,7 +22,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mcp-runner = "0.2.3"
+mcp-runner = "0.3.0"
 ```
 
 ## Quick Start

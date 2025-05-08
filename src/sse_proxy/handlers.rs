@@ -106,9 +106,14 @@ pub struct ToolCallRequest {
 pub async fn sse_main_endpoint(
     event_manager: Data<Arc<EventManager>>,
     proxy: Data<Arc<Mutex<SSEProxy>>>,
-    _req: HttpRequest, // Added underscore to indicate intentionally unused
+    req: HttpRequest,
 ) -> impl Responder {
-    tracing::debug!("Client connected to main SSE entrypoint");
+    tracing::debug!(
+        method = %req.method(),
+        path = %req.path(),
+        headers = ?req.headers(),
+        "Client connected to main SSE entrypoint"
+    );
 
     // Create a receiver from the event manager
     let mut receiver = event_manager.subscribe();
@@ -117,20 +122,43 @@ pub async fn sse_main_endpoint(
     let proxy_lock = proxy.lock().await;
     let server_info = proxy_lock.get_server_info().lock().await;
 
-    // Build server endpoints mapping
+    // Build server endpoints mapping with correct paths
     let mut servers_map = serde_json::Map::new();
     for (_id, info) in server_info.iter() {
-        // Added underscore to indicate intentionally unused
-        servers_map.insert(info.name.clone(), json!(format!("/sse/{}", info.name)));
+        // Use the correct /sse/{server_name} pattern for server endpoints
+        let server_endpoint = format!("/sse/{}", info.name);
+        servers_map.insert(info.name.clone(), json!(server_endpoint));
+        tracing::debug!(
+            server_name = %info.name,
+            endpoint = %server_endpoint,
+            "Adding server endpoint to SSE configuration"
+        );
     }
     let servers = Value::Object(servers_map);
+
+    // Define the message URL
+    let message_url = "/sse/messages";
+
+    // Log the configuration being sent
+    tracing::debug!(
+        message_url = %message_url,
+        servers = ?servers,
+        "Preparing SSE endpoint configuration response"
+    );
 
     // Clone for use in the async block
     let event_manager_clone = Arc::clone(&event_manager);
 
-    // Send initial configuration asynchronously
+    // Send initial configuration asynchronously with the correct message_url
     tokio::spawn(async move {
-        event_manager_clone.send_initial_config("/sse/messages", &servers);
+        // Use /sse/messages as the correct message endpoint URL
+        event_manager_clone.send_initial_config(message_url, &servers);
+
+        tracing::info!(
+            message_url = %message_url,
+            servers = ?servers,
+            "Sent SSE endpoint configuration to client"
+        );
     });
 
     // Prepare the event stream
@@ -144,6 +172,11 @@ pub async fn sse_main_endpoint(
                 event = receiver.recv() => {
                     match event {
                         Ok(msg) => {
+                            tracing::debug!(
+                                event_type = %msg.event,
+                                event_id = ?msg.id,
+                                "Sending SSE event to client"
+                            );
                             yield Ok::<_, actix_web::Error>(EventManager::format_sse_message(&msg));
                         },
                         Err(e) => {
@@ -154,6 +187,7 @@ pub async fn sse_main_endpoint(
                 },
                 // Send heartbeat
                 _ = heartbeat_interval.tick() => {
+                    tracing::debug!("Sending SSE heartbeat");
                     yield Ok::<_, actix_web::Error>(Bytes::from(":\n\n")); // Colon comment for heartbeat
                 }
             }
@@ -161,12 +195,15 @@ pub async fn sse_main_endpoint(
     };
 
     // Return the HTTP response with the SSE stream
-    HttpResponse::Ok()
+    let response = HttpResponse::Ok()
         .append_header(("Content-Type", "text/event-stream"))
         .append_header(("Cache-Control", "no-cache"))
         .append_header(("Connection", "keep-alive"))
         .append_header(("Access-Control-Allow-Origin", "*"))
-        .streaming(stream)
+        .streaming(stream);
+
+    tracing::debug!("SSE connection response initiated");
+    response
 }
 
 /// SSE stream handler
@@ -531,4 +568,98 @@ pub async fn tool_call_jsonrpc(
             Ok(error_response)
         }
     }
+}
+
+/// Handle messages from clients
+///
+/// This handler receives messages sent by clients to the SSE endpoint.
+/// These messages are typically requests that will be processed and
+/// responded to via the SSE stream.
+///
+/// # Returns
+///
+/// An HTTP response acknowledging receipt of the message
+pub async fn sse_messages(
+    proxy: Data<Arc<Mutex<SSEProxy>>>,
+    body: Bytes,
+    _req: HttpRequest,
+) -> Result<impl Responder> {
+    tracing::debug!("Received message from client");
+
+    // Parse the message as a JSON-RPC request
+    let json_rpc_req: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to parse client message as JsonRPC request");
+            return Err(Error::JsonRpc(format!("Invalid message format: {}", e)));
+        }
+    };
+
+    // Extract the request ID and method
+    let request_id = json_rpc_req.id.clone();
+    let method = json_rpc_req.method.clone();
+
+    // Parse method to get server name and tool name
+    let parts: Vec<&str> = method.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return Err(Error::JsonRpc(format!(
+            "Invalid method format. Expected 'server.tool', got '{}'",
+            method
+        )));
+    }
+
+    let server_name = parts[0];
+    let tool_name = parts[1];
+    let args = json_rpc_req.params.unwrap_or(json!({}));
+
+    tracing::debug!(
+        req_id = ?request_id,
+        server = %server_name,
+        tool = %tool_name,
+        "SSE message received"
+    );
+
+    // Process the tool call asynchronously
+    let proxy_lock = Arc::clone(&proxy);
+    let request_id_str = match &request_id {
+        Value::String(s) => s.clone(),
+        _ => request_id.to_string(),
+    };
+
+    // Clone data for the async task
+    let server_name_clone = server_name.to_string();
+    let tool_name_clone = tool_name.to_string();
+    let args_clone = args.clone();
+
+    tokio::spawn(async move {
+        // Acquire the lock on the proxy
+        let proxy = proxy_lock.lock().await;
+
+        // Process the tool call
+        if let Err(e) = proxy
+            .process_tool_call(
+                &server_name_clone,
+                &tool_name_clone,
+                args_clone,
+                &request_id_str,
+            )
+            .await
+        {
+            tracing::error!(
+                req_id = %request_id_str,
+                server = %server_name_clone,
+                tool = %tool_name_clone,
+                error = %e,
+                "Failed to process tool call from SSE message"
+            );
+            // Error handling is done in process_tool_call which will send error events
+        }
+    });
+
+    // Return a successful response immediately
+    Ok(HttpResponse::Accepted().json(json!({
+        "status": "accepted",
+        "id": request_id,
+        "message": "Message received and being processed"
+    })))
 }

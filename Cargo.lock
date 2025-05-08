@@ -1257,7 +1257,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-runner"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "actix-cors",
  "actix-web",
