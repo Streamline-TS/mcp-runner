@@ -70,18 +70,27 @@ impl EventManager {
         _tool_name: &str, // No longer needed for the event payload itself
         data: serde_json::Value,
     ) {
-        // Construct a JSON-RPC success response
-        let response = JsonRpcResponse::success(request_id, data);
+        // NOTE: We're NOT wrapping the data in a JsonRpcResponse here
+        // Instead, we're directly serializing the JSON-RPC response object that was passed in
+        // This is because the Python client expects the raw JSON-RPC response
 
-        // Serialize the JSON-RPC response
-        match serde_json::to_string(&response) {
+        // The caller should provide a properly formatted JSON-RPC response
+        match serde_json::to_string(&data) {
             Ok(json_data) => {
                 // Create SSE message with event type "message" and request_id as SSE id
                 let message = SSEMessage::new("message", &json_data, Some(request_id));
+
+                // Log the message for debugging
+                tracing::debug!(
+                    request_id = %request_id,
+                    message_data = %json_data,
+                    "Sending tool response via SSE"
+                );
+
                 self.send_sse_message(message, "message"); // Use helper to send
             }
             Err(e) => {
-                tracing::error!(error = %e, request_id = %request_id, "Failed to serialize JSON-RPC success response");
+                tracing::error!(error = %e, request_id = %request_id, "Failed to serialize JSON-RPC response");
             }
         }
     }

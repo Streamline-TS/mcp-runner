@@ -574,28 +574,74 @@ pub async fn sse_messages(
 ) -> Result<impl Responder> {
     tracing::debug!("Received message from client");
 
-    // Parse the message as a JSON-RPC request
-    let json_rpc_req: JsonRpcRequest = match serde_json::from_slice(&body) {
-        Ok(req) => req,
+    // First try to parse message as a JSON value to see its structure
+    let json_value: Value = match serde_json::from_slice(&body) {
+        Ok(val) => val,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to parse client message as JsonRPC request");
-            return Err(Error::JsonRpc(format!("Invalid message format: {}", e)));
+            tracing::error!(error = %e, "Failed to parse client message as JSON");
+            return Err(Error::JsonRpc(format!("Invalid JSON format: {}", e)));
         }
     };
 
-    // Extract the request ID and method
-    let request_id = json_rpc_req.id.clone();
-    let method = json_rpc_req.method.clone();
+    // Log the raw message for debugging
+    tracing::debug!(
+        raw_message = ?json_value,
+        "Raw client message"
+    );
 
-    // Log the full request for debugging
+    // Try to extract the method and determine message type
+    let method = match json_value.get("method") {
+        Some(m) => m.as_str().unwrap_or("unknown"),
+        None => {
+            tracing::error!("Message missing 'method' field");
+            return Err(Error::JsonRpc("Missing 'method' field".to_string()));
+        }
+    };
+
+    // Extract the request ID if present (might be missing in notifications)
+    let request_id = match json_value.get("id") {
+        Some(id) => id.clone(),
+        None => {
+            // For ping and other special messages, provide a default ID
+            if method == "ping" {
+                json!("ping-default-id")
+            } else {
+                // For other messages, generate a random ID
+                json!(format!("generated-{}", uuid::Uuid::new_v4()))
+            }
+        }
+    };
+
+    // Log information about the message
     tracing::debug!(
         req_id = ?request_id,
         method = %method,
-        params = ?json_rpc_req.params,
-        "Received JSON-RPC request"
+        "Processing client message"
     );
 
-    // Special case for initialize method
+    // Special handling for notification messages
+    if method.starts_with("notifications/") {
+        tracing::info!("Processing notification: {}", method);
+
+        // Handle 'initialized' notification
+        if method == "notifications/initialized" {
+            tracing::debug!("Client sent initialized notification");
+
+            // Just accept the notification, no response needed
+            return Ok(HttpResponse::Accepted().json(json!({
+                "status": "accepted",
+                "message": "Notification acknowledged"
+            })));
+        }
+
+        // Handle other notifications in the future
+        return Ok(HttpResponse::Accepted().json(json!({
+            "status": "accepted",
+            "message": "Notification received"
+        })));
+    }
+
+    // Special handling for initialize method
     if method == "initialize" {
         tracing::info!("Processing initialize request");
 
@@ -611,26 +657,42 @@ pub async fn sse_messages(
             servers_map.insert(info.name.clone(), json!(format!("/sse/{}", info.name)));
         }
 
-        // Create a response with server capabilities
+        // Format exactly as Python client expects - a standard JSON-RPC response
         let initialize_response = json!({
-            "servers": servers_map,
-            "capabilities": {
-                "streaming": true
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "servers": servers_map,
+                "capabilities": {
+                    "streaming": true,
+                    "roots": {
+                        "listChanged": true
+                    },
+                    "sampling": {}
+                },
+                "serverInfo": {
+                    "name": "mcp-runner",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "protocolVersion": "2024-11-05"
             }
         });
 
-        // Send the response through the SSE event stream
-        let request_id_str = match &request_id {
-            Value::String(s) => s.clone(),
-            _ => request_id.to_string(),
-        };
+        // Log what we're sending back for debugging
+        tracing::info!(
+            response = ?initialize_response,
+            "Sending initialize response"
+        );
 
+        // Send the full JSON-RPC response (not just the result)
         event_manager.send_tool_response(
-            &request_id_str,
+            &request_id.to_string(),
             "system",
             "initialize",
-            initialize_response,
+            initialize_response, // Send the entire JSON-RPC response object
         );
+
+        tracing::debug!("Sent initialization response");
 
         // Return immediate acceptance
         return Ok(HttpResponse::Accepted().json(json!({
@@ -640,7 +702,58 @@ pub async fn sse_messages(
         })));
     }
 
-    // For non-initialize requests, process as a regular tool call
+    // Special handling for ping method
+    if method == "ping" {
+        tracing::info!("Processing ping request");
+
+        // Create a simple response for ping
+        let proxy_lock = proxy.lock().await;
+        let event_manager = proxy_lock.event_manager();
+
+        // Format exactly as Python client expects - a standard JSON-RPC response
+        let ping_response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "type": "pong"
+            }
+        });
+
+        // Log what we're sending back
+        tracing::debug!(
+            response = ?ping_response,
+            "Sending ping response"
+        );
+
+        // Send the response
+        let request_id_str = request_id.to_string();
+        event_manager.send_tool_response(&request_id_str, "system", "ping", ping_response);
+
+        // Return immediate acceptance
+        return Ok(HttpResponse::Accepted().json(json!({
+            "status": "accepted",
+            "id": request_id,
+            "message": "Ping request received and processed"
+        })));
+    }
+
+    // Try to parse as a standard JSON-RPC request now
+    let json_rpc_req: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to parse as standard JsonRPC request");
+            // Return acceptance for special messages we've already handled
+            if method == "ping" || method == "initialize" {
+                return Ok(HttpResponse::Accepted().json(json!({
+                    "status": "accepted",
+                    "message": "Message processed with special handling"
+                })));
+            }
+            return Err(Error::JsonRpc(format!("Invalid message format: {}", e)));
+        }
+    };
+
+    // For standard JSON-RPC requests, continue with normal processing
     // Parse method to get server name and tool name
     let parts: Vec<&str> = method.splitn(2, '.').collect();
     if parts.len() != 2 {
