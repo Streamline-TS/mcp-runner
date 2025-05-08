@@ -163,32 +163,20 @@ pub async fn sse_main_endpoint(
 
     // Prepare the event stream
     let stream = async_stream::stream! {
-        // Create a heartbeat interval (every 30 seconds)
-        let mut heartbeat_interval = interval(Duration::from_secs(30));
-
         loop {
-            tokio::select! {
-                // Check for new events
-                event = receiver.recv() => {
-                    match event {
-                        Ok(msg) => {
-                            tracing::debug!(
-                                event_type = %msg.event,
-                                event_id = ?msg.id,
-                                "Sending SSE event to client"
-                            );
-                            yield Ok::<_, actix_web::Error>(EventManager::format_sse_message(&msg));
-                        },
-                        Err(e) => {
-                            tracing::error!(error = %e, "Error receiving SSE event");
-                            break;
-                        }
-                    }
+            // Check for new events
+            match receiver.recv().await {
+                Ok(msg) => {
+                    tracing::debug!(
+                        event_type = %msg.event,
+                        event_id = ?msg.id,
+                        "Sending SSE event to client"
+                    );
+                    yield Ok::<_, actix_web::Error>(EventManager::format_sse_message(&msg));
                 },
-                // Send heartbeat
-                _ = heartbeat_interval.tick() => {
-                    tracing::debug!("Sending SSE heartbeat");
-                    yield Ok::<_, actix_web::Error>(Bytes::from(":\n\n")); // Colon comment for heartbeat
+                Err(e) => {
+                    tracing::error!(error = %e, "Error receiving SSE event");
+                    break;
                 }
             }
         }
@@ -599,6 +587,60 @@ pub async fn sse_messages(
     let request_id = json_rpc_req.id.clone();
     let method = json_rpc_req.method.clone();
 
+    // Log the full request for debugging
+    tracing::debug!(
+        req_id = ?request_id,
+        method = %method,
+        params = ?json_rpc_req.params,
+        "Received JSON-RPC request"
+    );
+
+    // Special case for initialize method
+    if method == "initialize" {
+        tracing::info!("Processing initialize request");
+
+        // Create a simple response for initialize
+        let proxy_lock = proxy.lock().await;
+        let event_manager = proxy_lock.event_manager();
+
+        // Get server information to include in response
+        let server_info = proxy_lock.get_server_info().lock().await;
+        let mut servers_map = serde_json::Map::new();
+
+        for (_id, info) in server_info.iter() {
+            servers_map.insert(info.name.clone(), json!(format!("/sse/{}", info.name)));
+        }
+
+        // Create a response with server capabilities
+        let initialize_response = json!({
+            "servers": servers_map,
+            "capabilities": {
+                "streaming": true
+            }
+        });
+
+        // Send the response through the SSE event stream
+        let request_id_str = match &request_id {
+            Value::String(s) => s.clone(),
+            _ => request_id.to_string(),
+        };
+
+        event_manager.send_tool_response(
+            &request_id_str,
+            "system",
+            "initialize",
+            initialize_response,
+        );
+
+        // Return immediate acceptance
+        return Ok(HttpResponse::Accepted().json(json!({
+            "status": "accepted",
+            "id": request_id,
+            "message": "Initialization request received and being processed"
+        })));
+    }
+
+    // For non-initialize requests, process as a regular tool call
     // Parse method to get server name and tool name
     let parts: Vec<&str> = method.splitn(2, '.').collect();
     if parts.len() != 2 {
