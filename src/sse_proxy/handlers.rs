@@ -702,6 +702,257 @@ pub async fn sse_messages(
         })));
     }
 
+    // Special handling for tools/list method
+    if method == "tools/list" {
+        tracing::info!("Processing tools/list request");
+
+        let proxy_lock = proxy.lock().await;
+        let event_manager = proxy_lock.event_manager();
+        let server_info = proxy_lock.get_server_info().lock().await;
+        let runner_access = proxy_lock.get_runner_access();
+
+        // Collect tools from all servers dynamically
+        let mut all_tools = Vec::new();
+
+        // For each server in the server info map
+        for (server_name, _info) in server_info.iter() {
+            // Try to get a client for this server
+            match (runner_access.get_server_id)(server_name) {
+                Ok(server_id) => {
+                    match (runner_access.get_client)(server_id) {
+                        Ok(client) => {
+                            // Initialize client if needed
+                            if let Err(e) = client.initialize().await {
+                                tracing::warn!(
+                                    server = %server_name,
+                                    error = %e,
+                                    "Failed to initialize client, continuing to next server"
+                                );
+                                continue;
+                            }
+
+                            // List tools for this server
+                            match client.list_tools().await {
+                                Ok(tools) => {
+                                    for tool in tools {
+                                        all_tools.push(json!({
+                                            "name": tool.name,
+                                            "description": tool.description,
+                                            "server": server_name,
+                                            "inputSchema": tool.input_schema.unwrap_or(json!({})),
+                                            "outputSchema": tool.output_schema.unwrap_or(json!({}))
+                                        }));
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        server = %server_name,
+                                        error = %e,
+                                        "Failed to list tools for server"
+                                    );
+                                    // Continue to next server
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                server = %server_name,
+                                error = %e,
+                                "Failed to get client for server"
+                            );
+                            // Continue to next server
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        server = %server_name,
+                        error = %e,
+                        "Failed to get server ID"
+                    );
+                    // Continue to next server
+                }
+            }
+        }
+
+        // Format response as Python client expects
+        let tools_response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "tools": all_tools
+            }
+        });
+
+        tracing::debug!(
+            response = ?tools_response,
+            "Sending tools/list response"
+        );
+
+        event_manager.send_tool_response(
+            &request_id.to_string(),
+            "system",
+            "tools/list",
+            tools_response,
+        );
+
+        return Ok(HttpResponse::Accepted().json(json!({
+            "status": "accepted",
+            "id": request_id,
+            "message": "Tools list request received and processed"
+        })));
+    }
+
+    // Special handling for tools/call method
+    if method == "tools/call" {
+        tracing::info!("Processing tools/call request");
+
+        // Extract tool name and arguments from the params
+        let params = match json_value.get("params") {
+            Some(p) => p.clone(),
+            None => {
+                tracing::error!("Missing params in tools/call request");
+                return Err(Error::JsonRpc(
+                    "Missing params in tools/call request".to_string(),
+                ));
+            }
+        };
+
+        // Extract the tool name and arguments
+        let tool_name = match params.get("name") {
+            Some(Value::String(name)) => name.clone(),
+            _ => {
+                tracing::error!("Missing or invalid tool name in tools/call request");
+                return Err(Error::JsonRpc("Missing or invalid tool name".to_string()));
+            }
+        };
+
+        let arguments = match params.get("arguments") {
+            Some(args) => args.clone(),
+            None => {
+                tracing::error!("Missing arguments in tools/call request");
+                return Err(Error::JsonRpc("Missing arguments".to_string()));
+            }
+        };
+
+        // Check if server is provided, if not we'll try to determine it automatically
+        let server_name = match params.get("server") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                // Server name not provided, try to determine it based on tool name
+                tracing::info!(
+                    tool = %tool_name,
+                    "Server name not provided, attempting to determine from tool name"
+                );
+
+                // Get server info and runner access
+                let proxy_lock = proxy.lock().await;
+                let server_info = proxy_lock.get_server_info().lock().await;
+                let runner_access = proxy_lock.get_runner_access();
+
+                // Try to find the server that has this tool
+                let mut found_server: Option<String> = None;
+
+                // For each server, check if it has the tool we want
+                for (server_name, _info) in server_info.iter() {
+                    if let Ok(server_id) = (runner_access.get_server_id)(server_name) {
+                        if let Ok(client) = (runner_access.get_client)(server_id) {
+                            // Initialize client if needed
+                            if let Err(e) = client.initialize().await {
+                                tracing::warn!(
+                                    server = %server_name,
+                                    error = %e,
+                                    "Failed to initialize client, continuing to next server"
+                                );
+                                continue;
+                            }
+
+                            // List tools for this server
+                            if let Ok(tools) = client.list_tools().await {
+                                for tool in tools {
+                                    if tool.name == tool_name {
+                                        found_server = Some(server_name.clone());
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if found_server.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                match found_server {
+                    Some(server) => {
+                        tracing::info!(
+                            tool = %tool_name,
+                            server = %server,
+                            "Automatically determined server for tool"
+                        );
+                        server
+                    }
+                    None => {
+                        tracing::error!(
+                            tool = %tool_name,
+                            "Could not determine which server provides this tool"
+                        );
+                        return Err(Error::JsonRpc(
+                            "Could not determine which server provides this tool".to_string(),
+                        ));
+                    }
+                }
+            }
+        };
+
+        tracing::debug!(
+            req_id = ?request_id,
+            tool_name = %tool_name,
+            server_name = %server_name,
+            "Processing tool call"
+        );
+
+        // Process the tool call asynchronously
+        let proxy_lock = Arc::clone(&proxy);
+        let request_id_str = request_id.to_string();
+        let server_name_clone = server_name.clone();
+        let tool_name_clone = tool_name.clone();
+        let arguments_clone = arguments.clone();
+
+        tokio::spawn(async move {
+            // Acquire the lock on the proxy
+            let proxy = proxy_lock.lock().await;
+
+            // Process the tool call
+            if let Err(e) = proxy
+                .process_tool_call(
+                    &server_name_clone,
+                    &tool_name_clone,
+                    arguments_clone,
+                    &request_id_str,
+                )
+                .await
+            {
+                tracing::error!(
+                    req_id = %request_id_str,
+                    server = %server_name_clone,
+                    tool = %tool_name_clone,
+                    error = %e,
+                    "Failed to process tool call from tools/call method"
+                );
+                // Error handling is done in process_tool_call which will send error events
+            }
+        });
+
+        // Return immediate acceptance
+        return Ok(HttpResponse::Accepted().json(json!({
+            "status": "accepted",
+            "id": request_id,
+            "message": "Tool call received and being processed"
+        })));
+    }
+
     // Special handling for ping method
     if method == "ping" {
         tracing::info!("Processing ping request");
@@ -725,9 +976,8 @@ pub async fn sse_messages(
             "Sending ping response"
         );
 
-        // Send the response
-        let request_id_str = request_id.to_string();
-        event_manager.send_tool_response(&request_id_str, "system", "ping", ping_response);
+        // Send the response through the SSE stream
+        event_manager.send_tool_response(&request_id.to_string(), "system", "ping", ping_response);
 
         // Return immediate acceptance
         return Ok(HttpResponse::Accepted().json(json!({
@@ -737,84 +987,15 @@ pub async fn sse_messages(
         })));
     }
 
-    // Try to parse as a standard JSON-RPC request now
-    let json_rpc_req: JsonRpcRequest = match serde_json::from_slice(&body) {
-        Ok(req) => req,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to parse as standard JsonRPC request");
-            // Return acceptance for special messages we've already handled
-            if method == "ping" || method == "initialize" {
-                return Ok(HttpResponse::Accepted().json(json!({
-                    "status": "accepted",
-                    "message": "Message processed with special handling"
-                })));
-            }
-            return Err(Error::JsonRpc(format!("Invalid message format: {}", e)));
-        }
-    };
-
-    // For standard JSON-RPC requests, continue with normal processing
-    // Parse method to get server name and tool name
-    let parts: Vec<&str> = method.splitn(2, '.').collect();
-    if parts.len() != 2 {
-        return Err(Error::JsonRpc(format!(
-            "Invalid method format. Expected 'server.tool', got '{}'",
-            method
-        )));
-    }
-
-    let server_name = parts[0];
-    let tool_name = parts[1];
-    let args = json_rpc_req.params.unwrap_or(json!({}));
-
-    tracing::debug!(
+    // Default response for unknown methods
+    tracing::warn!(
         req_id = ?request_id,
-        server = %server_name,
-        tool = %tool_name,
-        "SSE message received"
+        method = %method,
+        "Unknown method received"
     );
 
-    // Process the tool call asynchronously
-    let proxy_lock = Arc::clone(&proxy);
-    let request_id_str = match &request_id {
-        Value::String(s) => s.clone(),
-        _ => request_id.to_string(),
-    };
+    let error_response =
+        create_jsonrpc_error(request_id, -32601, format!("Method '{}' not found", method));
 
-    // Clone data for the async task
-    let server_name_clone = server_name.to_string();
-    let tool_name_clone = tool_name.to_string();
-    let args_clone = args.clone();
-
-    tokio::spawn(async move {
-        // Acquire the lock on the proxy
-        let proxy = proxy_lock.lock().await;
-
-        // Process the tool call
-        if let Err(e) = proxy
-            .process_tool_call(
-                &server_name_clone,
-                &tool_name_clone,
-                args_clone,
-                &request_id_str,
-            )
-            .await
-        {
-            tracing::error!(
-                req_id = %request_id_str,
-                server = %server_name_clone,
-                tool = %tool_name_clone,
-                error = %e,
-                "Failed to process tool call from SSE message"
-            );
-            // Error handling is done in process_tool_call which will send error events
-        }
-    });
-
-    // Return a successful response immediately
-    Ok(HttpResponse::Accepted().json(json!({
-        "status": "accepted",
-        "id": request_id,
-        "message": "Message received and being processed"
-    })))
+    Ok(error_response)
 }

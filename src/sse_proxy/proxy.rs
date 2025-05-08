@@ -608,14 +608,15 @@ impl SSEProxy {
             return Err(e);
         }
 
-        // Call the tool
-        let result = client.call_tool(tool_name, &args).await;
+        // Call the tool with explicit type annotation for serde_json::Value
+        let result: Result<serde_json::Value> = client.call_tool(tool_name, &args).await;
 
         match result {
             Ok(response) => {
                 tracing::debug!(req_id = %request_id, "Tool call successful");
 
-                // Send response event
+                // Send the raw response to the event manager
+                // The event manager will now format it properly as a JSON-RPC response
                 self.event_manager.send_tool_response(
                     request_id,
                     &server_id_str,

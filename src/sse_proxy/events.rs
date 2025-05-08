@@ -70,12 +70,32 @@ impl EventManager {
         _tool_name: &str, // No longer needed for the event payload itself
         data: serde_json::Value,
     ) {
-        // NOTE: We're NOT wrapping the data in a JsonRpcResponse here
-        // Instead, we're directly serializing the JSON-RPC response object that was passed in
-        // This is because the Python client expects the raw JSON-RPC response
+        // Extract the result from the JSON-RPC response if it exists
+        let result_value = if let Some(result) = data.get("result") {
+            // We've found the result field in the JSON-RPC response
+            // Now we need to return just the result instead of the full JSON-RPC response
+            result.clone()
+        } else {
+            // If there's no result field, just pass the data as-is
+            data
+        };
 
-        // The caller should provide a properly formatted JSON-RPC response
-        match serde_json::to_string(&data) {
+        // Parse request_id to the appropriate type (number or string)
+        let id_value = if let Ok(num_id) = request_id.parse::<i64>() {
+            serde_json::Value::Number(serde_json::Number::from(num_id))
+        } else {
+            serde_json::Value::String(request_id.to_string())
+        };
+
+        // Create the JSON-RPC response directly with the parsed ID
+        let json_rpc_response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id_value,
+            "result": result_value
+        });
+
+        // Serialize the JSON-RPC response
+        match serde_json::to_string(&json_rpc_response) {
             Ok(json_data) => {
                 // Create SSE message with event type "message" and request_id as SSE id
                 let message = SSEMessage::new("message", &json_data, Some(request_id));
@@ -97,6 +117,13 @@ impl EventManager {
 
     /// Send a tool error event using JSON-RPC format
     pub fn send_tool_error(&self, request_id: &str, server_id: &str, tool_name: &str, error: &str) {
+        // Parse request_id to the appropriate type (number or string)
+        let id_value = if let Ok(num_id) = request_id.parse::<i64>() {
+            serde_json::Value::Number(serde_json::Number::from(num_id))
+        } else {
+            serde_json::Value::String(request_id.to_string())
+        };
+
         // Construct a JSON-RPC error object
         // Using a generic error code -32000 for server error
         // Optionally include more details in the 'data' field
@@ -113,7 +140,7 @@ impl EventManager {
         // Construct a JSON-RPC error response
         let response = JsonRpcResponse {
             jsonrpc: JSON_RPC_VERSION.to_string(),
-            id: serde_json::Value::String(request_id.to_string()),
+            id: id_value,
             result: None,
             error: Some(rpc_error),
         };
@@ -123,6 +150,14 @@ impl EventManager {
             Ok(json_data) => {
                 // Create SSE message with event type "message" and request_id as SSE id
                 let message = SSEMessage::new("message", &json_data, Some(request_id));
+
+                // Log the message for debugging
+                tracing::debug!(
+                    request_id = %request_id,
+                    message_data = %json_data,
+                    "Sending tool error via SSE"
+                );
+
                 self.send_sse_message(message, "message"); // Use helper to send
             }
             Err(e) => {
