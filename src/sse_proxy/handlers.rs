@@ -95,6 +95,80 @@ pub struct ToolCallRequest {
     pub request_id: String,
 }
 
+/// Main SSE entrypoint handler
+///
+/// Establishes the primary SSE connection for client-server communication
+/// and returns initial configuration with namespaced endpoints for backend MCP servers.
+///
+/// # Returns
+///
+/// An HTTP response with an SSE stream and initial configuration
+pub async fn sse_main_endpoint(
+    event_manager: Data<Arc<EventManager>>,
+    proxy: Data<Arc<Mutex<SSEProxy>>>,
+    _req: HttpRequest, // Added underscore to indicate intentionally unused
+) -> impl Responder {
+    tracing::debug!("Client connected to main SSE entrypoint");
+
+    // Create a receiver from the event manager
+    let mut receiver = event_manager.subscribe();
+
+    // Get server information
+    let proxy_lock = proxy.lock().await;
+    let server_info = proxy_lock.get_server_info().lock().await;
+
+    // Build server endpoints mapping
+    let mut servers_map = serde_json::Map::new();
+    for (_id, info) in server_info.iter() {
+        // Added underscore to indicate intentionally unused
+        servers_map.insert(info.name.clone(), json!(format!("/sse/{}", info.name)));
+    }
+    let servers = Value::Object(servers_map);
+
+    // Clone for use in the async block
+    let event_manager_clone = Arc::clone(&event_manager);
+
+    // Send initial configuration asynchronously
+    tokio::spawn(async move {
+        event_manager_clone.send_initial_config("/sse/messages", &servers);
+    });
+
+    // Prepare the event stream
+    let stream = async_stream::stream! {
+        // Create a heartbeat interval (every 30 seconds)
+        let mut heartbeat_interval = interval(Duration::from_secs(30));
+
+        loop {
+            tokio::select! {
+                // Check for new events
+                event = receiver.recv() => {
+                    match event {
+                        Ok(msg) => {
+                            yield Ok::<_, actix_web::Error>(EventManager::format_sse_message(&msg));
+                        },
+                        Err(e) => {
+                            tracing::error!(error = %e, "Error receiving SSE event");
+                            break;
+                        }
+                    }
+                },
+                // Send heartbeat
+                _ = heartbeat_interval.tick() => {
+                    yield Ok::<_, actix_web::Error>(Bytes::from(":\n\n")); // Colon comment for heartbeat
+                }
+            }
+        }
+    };
+
+    // Return the HTTP response with the SSE stream
+    HttpResponse::Ok()
+        .append_header(("Content-Type", "text/event-stream"))
+        .append_header(("Cache-Control", "no-cache"))
+        .append_header(("Connection", "keep-alive"))
+        .append_header(("Access-Control-Allow-Origin", "*"))
+        .streaming(stream)
+}
+
 /// SSE stream handler
 ///
 /// This handler creates and returns an SSE stream for clients to receive events.

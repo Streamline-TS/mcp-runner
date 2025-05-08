@@ -351,6 +351,7 @@ impl SSEProxy {
                 // Apply Authentication middleware unconditionally; its internal logic handles conditions
                 .wrap(auth_middleware)
                 // Define routes
+                .route("/sse", web::get().to(handlers::sse_main_endpoint))
                 .route("/events", web::get().to(handlers::sse_events))
                 .route("/initialize", web::post().to(handlers::initialize))
                 .route("/tool", web::post().to(handlers::tool_call))

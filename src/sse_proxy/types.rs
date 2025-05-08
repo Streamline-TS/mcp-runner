@@ -45,6 +45,15 @@ pub struct ToolInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SSEEvent {
+    /// Endpoint configuration event
+    #[serde(rename = "endpoint")]
+    Endpoint {
+        /// URL for sending messages
+        message_url: String,
+        /// Available server endpoints
+        servers: serde_json::Value,
+    },
+
     /// Tool response event
     #[serde(rename = "tool-response")]
     ToolResponse {

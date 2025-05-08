@@ -27,6 +27,30 @@ impl EventManager {
         Self { sender }
     }
 
+    /// Send initial configuration information to a newly connected client
+    pub fn send_initial_config(&self, message_url: &str, servers: &serde_json::Value) {
+        let event = SSEEvent::Endpoint {
+            message_url: message_url.to_string(),
+            servers: servers.clone(),
+        };
+
+        // Serialize event payload to JSON
+        match serde_json::to_string(&event) {
+            Ok(json_data) => {
+                // Create SSE message with specific event type
+                let message = SSEMessage::new("endpoint", &json_data, None);
+                self.send_sse_message(message, "endpoint"); // Use helper to send
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    event_type = "endpoint",
+                    "Failed to serialize endpoint configuration event"
+                );
+            }
+        }
+    }
+
     /// Subscribe to events
     pub fn subscribe(&self) -> broadcast::Receiver<SSEMessage> {
         self.sender.subscribe()
