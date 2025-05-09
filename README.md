@@ -38,38 +38,38 @@ use serde_json::json;
 async fn main() -> Result<()> {
     // Create runner from config file
     let mut runner = McpRunner::from_config_file("config.json")?;
-    
+
     // Start all servers and the SSE proxy if configured
     let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
     let server_ids = server_ids?;
-    
+
     if proxy_started {
         println!("SSE proxy started successfully");
     }
-    
+
     // Get client for interacting with a specific server
     let server_id = runner.get_server_id("fetch")?;
     let client = runner.get_client(server_id)?;
-    
+
     // Initialize the client
     client.initialize().await?;
-    
+
     // List available tools
     let tools = client.list_tools().await?;
     println!("Available tools:");
     for tool in tools {
         println!("  - {}: {}", tool.name, tool.description);
     }
-    
+
     // Call the fetch tool with structured input
     let fetch_result = client.call_tool("fetch", &json!({
         "url": "https://modelcontextprotocol.io"
     })).await?;
     println!("Fetch result: {}", fetch_result);
-    
+
     // Stop the server when done
     runner.stop_server(server_id).await?;
-    
+
     Ok(())
 }
 ```
@@ -206,16 +206,17 @@ let result = client.call_tool("fetch", &json!({
 
 ## SSE Proxy
 
-The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers through HTTP and receive real-time updates using the Server-Sent Events protocol. It is implemented using Actix Web for high performance, reliability, and maintainability.
+The SSE (Server-Sent Events) proxy allows clients to connect to MCP servers through HTTP and receive real-time updates using the Server-Sent Events protocol. Built on Actix Web, it provides a unified JSON-RPC over HTTP interface with high performance, reliability, and maintainability.
 
 ### Features
 
-- **HTTP API Gateway**: Provides REST-like HTTP endpoints for accessing MCP server functionality
+- **Unified JSON-RPC API**: Single endpoint for all MCP server interactions via JSON-RPC
 - **Authentication**: Optional Bearer token authentication for secure access
 - **Server Access Control**: Restrict which servers can be accessed through the proxy
 - **Event Streaming**: Real-time updates from MCP servers to clients via SSE
 - **Cross-Origin Support**: Built-in CORS support for web browser clients
-- **Performance**: High-performance HTTP server built on Actix Web
+- **JSON-RPC Compatibility**: Full support for JSON-RPC 2.0 messages in both directions
+- **Efficient Event Broadcasting**: Uses Tokio broadcast channels for efficient event distribution
 
 ### Starting the Proxy
 
@@ -252,8 +253,8 @@ Configure the SSE proxy in your configuration file:
     "port": 3000,            // Port to listen on - default if omitted
     "workers": 4,            // Number of worker threads - default is 4 if omitted
     "allowedServers": [      // Optional: restrict which servers can be accessed
-      "fetch", 
-      "embedding"
+      "fetch",
+      "filesystem"
     ],
     "authenticate": {        // Optional: require authentication
       "bearer": {
@@ -270,13 +271,8 @@ The SSE proxy exposes the following HTTP endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/events` | GET | SSE event stream endpoint for receiving real-time updates |
-| `/initialize` | POST | JSON-RPC initialize endpoint for client initialization |
-| `/tool` | POST | Tool call endpoint for invoking MCP server tools |
-| `/servers` | GET | List available MCP servers and their status |
-| `/servers/{name}/tools` | GET | List available tools for a specific server |
-| `/servers/{name}/resources` | GET | List available resources for a specific server |
-| `/resource/{server}/{uri}` | GET | Get a specific resource from a server |
+| `/sse` | GET | SSE event stream endpoint for receiving real-time updates (sends `endpoint` and `message` events) |
+| `/sse/messages` | POST | JSON-RPC endpoint for sending requests to MCP servers (supports initialize, tools/list, tools/call, ping) |
 
 ## Examples
 
@@ -286,28 +282,35 @@ Check the `examples/` directory for more usage examples:
   ```bash
   # Run with info level logging
   RUST_LOG=info cargo run --example simple_client
-  ```  
+  ```
 - `sse_proxy.rs`: Example of using the SSE proxy to expose MCP servers to web clients
   ```bash
   # Run with info level logging
   RUST_LOG=info cargo run --example sse_proxy
   ```
-  
+
   This example uses the config in `examples/sse_config.json` to start servers and an SSE proxy,
   allowing web clients to connect and interact with MCP servers through HTTP and SSE.
-  
+
   JavaScript client example:
   ```javascript
   // Connect to the event stream
-  const eventSource = new EventSource('http://localhost:3000/events');
-  eventSource.addEventListener('tool-response', (event) => {
+  const eventSource = new EventSource('http://localhost:3000/sse');
+
+  // First you'll receive the endpoint information
+  eventSource.addEventListener('endpoint', (event) => {
+    console.log('Received endpoint path:', event.data);
+  });
+
+  // Then you'll receive JSON-RPC responses
+  eventSource.addEventListener('message', (event) => {
     const response = JSON.parse(event.data);
-    console.log('Received tool response:', response);
+    console.log('Received JSON-RPC response:', response);
   });
 
   // Make a tool call
   async function callTool() {
-    const response = await fetch('http://localhost:3000/tool', {
+    const response = await fetch('http://localhost:3000/sse/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

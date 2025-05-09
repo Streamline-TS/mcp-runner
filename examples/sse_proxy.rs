@@ -176,50 +176,23 @@ async fn main() -> Result<()> {
         let port = &sse_proxy_config.port;
 
         info!(
-            " - SSE events stream:           GET    http://{}:{}/events",
+            " - SSE events stream:           GET    http://{}:{}/sse",
             host, port
         );
         info!(
-            " - Call a tool:                 POST   http://{}:{}/tool",
+            " - JSON-RPC messages:           POST   http://{}:{}/sse/messages",
             host, port
-        );
-        info!(
-            " - JSON-RPC tool call:          POST   http://{}:{}/jsonrpc",
-            host, port
-        );
-        info!(
-            " - List all servers:            GET    http://{}:{}/servers",
-            host, port
-        );
-        info!(
-            " - List tools for a server:     GET    http://{}:{}/servers/SERVER_NAME/tools",
-            host, port
-        );
-        info!(
-            " - List resources for a server: GET    http://{}:{}/servers/SERVER_NAME/resources",
-            host, port
-        );
-        info!(
-            " - Get resource content:        GET    http://{}:{}/servers/SERVER_NAME/resources/RESOURCE_NAME",
-            host, port
-        );
-
-        info!("Example tool call with curl:");
-        info!("curl -X POST http://{}:{}/tool \\", host, port);
-        info!("  -H \"Content-Type: application/json\" \\");
-        info!(
-            "  -d '{{\"server\":\"fetch\", \"tool\":\"fetch\", \"args\":{{\"url\":\"https://example.com\"}}, \"requestId\":\"req-123\"}}' "
         );
 
         info!("Example JSON-RPC tool call with curl:");
-        info!("curl -X POST http://{}:{}/jsonrpc \\", host, port);
+        info!("curl -X POST http://{}:{}/sse/messages \\", host, port);
         info!("  -H \"Content-Type: application/json\" \\");
         info!(
-            "  -d '{{\"jsonrpc\":\"2.0\", \"id\":\"req-123\", \"method\":\"fetch.fetch\", \"params\":{{\"url\":\"https://example.com\"}}}}' "
+            "  -d '{{\"jsonrpc\":\"2.0\", \"id\":\"req-123\", \"method\":\"tools/call\", \"params\":{{\"server\":\"fetch\", \"tool\":\"fetch\", \"arguments\":{{\"url\":\"https://example.com\"}}}}}}' "
         );
 
         info!("Example SSE client with curl:");
-        info!("curl -N http://{}:{}/events", host, port);
+        info!("curl -N http://{}:{}/sse", host, port);
 
         // Setup interactive keyboard handler for commands
         let shutdown_flag = Arc::new(AtomicBool::new(false));
