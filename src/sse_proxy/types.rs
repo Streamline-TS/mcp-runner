@@ -4,7 +4,6 @@
 
 use crate::server::ServerId;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Server information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,68 +16,10 @@ pub struct ServerInfo {
     pub status: String,
 }
 
-/// Resource information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceInfo {
-    /// Resource name/ID
-    pub name: String,
-    /// Resource description
-    pub description: Option<String>,
-    /// Resource metadata
-    pub metadata: Option<HashMap<String, serde_json::Value>>,
-}
-
-/// Tool information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolInfo {
-    /// Tool name
-    pub name: String,
-    /// Tool description
-    pub description: String,
-    /// Tool parameters schema
-    pub parameters: Option<serde_json::Value>,
-    /// Tool return type
-    pub return_type: Option<String>,
-}
-
 /// Server-Sent Event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SSEEvent {
-    /// Endpoint configuration event
-    #[serde(rename = "endpoint")]
-    Endpoint {
-        /// URL for sending messages
-        message_url: String,
-        /// Available server endpoints
-        servers: serde_json::Value,
-    },
-
-    /// Tool response event
-    #[serde(rename = "tool-response")]
-    ToolResponse {
-        /// Request ID for correlation
-        request_id: String,
-        /// Server ID that processed the request
-        server_id: String,
-        /// Tool name that was called
-        tool_name: String,
-        /// Response data
-        data: serde_json::Value,
-    },
-
-    /// Tool error event
-    #[serde(rename = "tool-error")]
-    ToolError {
-        /// Request ID for correlation
-        request_id: String,
-        /// Server ID that processed the request
-        server_id: String,
-        /// Tool name that was called
-        tool_name: String,
-        /// Error message
-        error: String,
-    },
 
     /// Server status update event
     #[serde(rename = "server-status")]

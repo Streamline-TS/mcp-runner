@@ -16,7 +16,7 @@
 
 // Re-export the main types
 pub use self::proxy::{SSEProxy, SSEProxyHandle, SSEProxyRunnerAccess};
-pub use self::types::{ResourceInfo, SSEEvent, SSEMessage, ServerInfo, ServerInfoUpdate, ToolInfo};
+pub use self::types::{SSEEvent, SSEMessage, ServerInfo, ServerInfoUpdate};
 
 // Submodules
 pub mod actix_error;
