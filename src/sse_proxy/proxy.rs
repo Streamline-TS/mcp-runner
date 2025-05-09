@@ -353,23 +353,6 @@ impl SSEProxy {
                 // Define routes
                 .route("/sse", web::get().to(handlers::sse_main_endpoint))
                 .route("/sse/messages", web::post().to(handlers::sse_messages))
-                .route("/events", web::get().to(handlers::sse_events))
-                .route("/initialize", web::post().to(handlers::initialize))
-                .route("/tool", web::post().to(handlers::tool_call))
-                .route("/jsonrpc", web::post().to(handlers::tool_call_jsonrpc))
-                .route("/servers", web::get().to(handlers::list_servers))
-                .route(
-                    "/servers/{server}/tools",
-                    web::get().to(handlers::list_server_tools),
-                )
-                .route(
-                    "/servers/{server}/resources",
-                    web::get().to(handlers::list_server_resources),
-                )
-                .route(
-                    "/servers/{server}/resources/{resource}",
-                    web::get().to(handlers::get_server_resource),
-                )
         });
 
         // Configure workers - use the config value if specified, otherwise default to 4

@@ -65,9 +65,11 @@ async fn test_tool_response_as_jsonrpc() {
         "JSON-RPC ID should match request ID"
     );
     assert!(json_rpc.result.is_some(), "Result should be present");
+    // Since send_tool_response extracts the "result" field from the response_data
+    // we should only be comparing the inner data, which is response_data["result"]
     assert_eq!(
         json_rpc.result.unwrap(),
-        response_data,
+        response_data["result"],
         "Result data should match"
     );
     assert!(
