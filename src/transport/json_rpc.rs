@@ -14,6 +14,25 @@ use std::fmt;
 /// JSON-RPC protocol version
 pub const JSON_RPC_VERSION: &str = "2.0";
 
+/// Standard JSON-RPC error codes as defined in the JSON-RPC 2.0 specification
+/// and the Model Context Protocol (MCP) documentation
+pub mod error_codes {
+    /// Parse error: Invalid JSON was received
+    pub const PARSE_ERROR: i32 = -32700;
+    /// Invalid Request: The JSON sent is not a valid Request object
+    pub const INVALID_REQUEST: i32 = -32600;
+    /// Method not found: The method does not exist / is not available
+    pub const METHOD_NOT_FOUND: i32 = -32601;
+    /// Invalid params: Invalid method parameter(s)
+    pub const INVALID_PARAMS: i32 = -32602;
+    /// Internal error: Internal JSON-RPC error
+    pub const INTERNAL_ERROR: i32 = -32603;
+    
+    // Server-defined errors should be in the range -32000 to -32099
+    /// Generic server error for MCP-specific issues
+    pub const SERVER_ERROR: i32 = -32000;
+}
+
 /// A JSON-RPC message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

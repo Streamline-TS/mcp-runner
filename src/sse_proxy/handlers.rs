@@ -10,7 +10,7 @@ use crate::server::ServerId;
 use crate::sse_proxy::events::EventManager;
 use crate::sse_proxy::proxy::SSEProxy;
 use crate::sse_proxy::types::{ResourceInfo, ToolInfo};
-use crate::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcRequest, JsonRpcResponse};
+use crate::transport::json_rpc::{error_codes, JSON_RPC_VERSION, JsonRpcRequest, JsonRpcResponse};
 
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
@@ -533,7 +533,7 @@ pub async fn tool_call_jsonrpc(
         Ok(result) => result,
         Err(e) => {
             let error_response =
-                create_jsonrpc_error(request_id, -32000, format!("Validation failed: {}", e));
+                create_jsonrpc_error(request_id, error_codes::SERVER_ERROR, format!("Validation failed: {}", e));
             return Ok(error_response);
         }
     };
@@ -552,7 +552,7 @@ pub async fn tool_call_jsonrpc(
                 "Tool call failed"
             );
             let error_response =
-                create_jsonrpc_error(request_id, -32000, format!("Tool call failed: {}", e));
+                create_jsonrpc_error(request_id, error_codes::SERVER_ERROR, format!("Tool call failed: {}", e));
             Ok(error_response)
         }
     }
@@ -995,7 +995,7 @@ pub async fn sse_messages(
     );
 
     let error_response =
-        create_jsonrpc_error(request_id, -32601, format!("Method '{}' not found", method));
+        create_jsonrpc_error(request_id, error_codes::METHOD_NOT_FOUND, format!("Method '{}' not found", method));
 
     Ok(error_response)
 }

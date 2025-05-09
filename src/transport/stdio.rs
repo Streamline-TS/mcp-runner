@@ -1,4 +1,4 @@
-use super::json_rpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
+use super::json_rpc::{error_codes, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use crate::error::{Error, Result};
 use crate::transport::Transport;
 use async_process::{ChildStdin, ChildStdout};
@@ -477,7 +477,7 @@ impl StdioTransport {
                     id: Value::Null,
                     result: None,
                     error: Some(super::json_rpc::JsonRpcError {
-                        code: -32099,
+                        code: error_codes::SERVER_ERROR,
                         message: "Connection closed".to_string(),
                         data: None,
                     }),

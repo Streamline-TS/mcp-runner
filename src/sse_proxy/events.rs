@@ -4,7 +4,7 @@
 //! using Actix Web's streaming capabilities.
 
 use crate::sse_proxy::types::{SSEEvent, SSEMessage};
-use crate::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcError, JsonRpcResponse}; // Import JSON-RPC types
+use crate::transport::json_rpc::{error_codes, JSON_RPC_VERSION, JsonRpcError, JsonRpcResponse}; // Import JSON-RPC types
 use actix_web::web::Bytes;
 use tokio::sync::broadcast;
 use tracing;
@@ -125,14 +125,14 @@ impl EventManager {
         };
 
         // Construct a JSON-RPC error object
-        // Using a generic error code -32000 for server error
-        // Optionally include more details in the 'data' field
+        // Using the standard server error code from MCP spec
+        // Include more details in the 'data' field
         let error_data = serde_json::json!({
             "serverId": server_id,
             "toolName": tool_name
         });
         let rpc_error = JsonRpcError {
-            code: -32000, // Example: Generic server error code
+            code: error_codes::SERVER_ERROR,
             message: error.to_string(),
             data: Some(error_data),
         };
