@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::sse_proxy::events::EventManager;
 use crate::sse_proxy::proxy::SSEProxy;
-use crate::transport::json_rpc::{error_codes, JsonRpcResponse};
+use crate::transport::json_rpc::{JsonRpcResponse, error_codes};
 
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
@@ -112,13 +112,16 @@ async fn handle_notification_message(method: &str, request_id: &Value) -> Result
     }
 
     // Just accept the notification, no response needed
-    Ok(create_acceptance_response(request_id, "Notification acknowledged"))
+    Ok(create_acceptance_response(
+        request_id,
+        "Notification acknowledged",
+    ))
 }
 
 /// Handle initialize method
 async fn handle_initialize_message(
-    proxy: &Arc<Mutex<SSEProxy>>, 
-    request_id: &Value
+    proxy: &Arc<Mutex<SSEProxy>>,
+    request_id: &Value,
 ) -> Result<HttpResponse> {
     tracing::info!("Processing initialize request");
 
@@ -126,7 +129,7 @@ async fn handle_initialize_message(
     let proxy_lock = proxy.lock().await;
     let event_manager = proxy_lock.event_manager();
     let server_info = proxy_lock.get_server_info().lock().await;
-    
+
     // Build servers map
     let mut servers_map = serde_json::Map::new();
     for (_id, info) in server_info.iter() {
@@ -135,7 +138,7 @@ async fn handle_initialize_message(
 
     // Create response
     let initialize_response = create_jsonrpc_response(
-        request_id, 
+        request_id,
         json!({
             "servers": servers_map,
             "capabilities": {
@@ -150,7 +153,7 @@ async fn handle_initialize_message(
                 "version": env!("CARGO_PKG_VERSION")
             },
             "protocolVersion": "2024-11-05"
-        })
+        }),
     );
 
     // Log what we're sending back
@@ -164,19 +167,22 @@ async fn handle_initialize_message(
         &request_id.to_string(),
         "system",
         "initialize",
-        initialize_response
+        initialize_response,
     );
 
     tracing::debug!("Sent initialization response");
 
     // Return immediate acceptance
-    Ok(create_acceptance_response(request_id, "Initialization request received and being processed"))
+    Ok(create_acceptance_response(
+        request_id,
+        "Initialization request received and being processed",
+    ))
 }
 
 /// Handle tools/list method
 async fn handle_tools_list_message(
-    proxy: &Arc<Mutex<SSEProxy>>, 
-    request_id: &Value
+    proxy: &Arc<Mutex<SSEProxy>>,
+    request_id: &Value,
 ) -> Result<HttpResponse> {
     tracing::info!("Processing tools/list request");
 
@@ -189,8 +195,18 @@ async fn handle_tools_list_message(
     // Collect tools from all servers
     let mut all_tools = Vec::new();
 
+    // Get allowed servers if configured
+    let allowed_servers = (runner_access.get_allowed_servers)();
+
     // For each server in the server info map
     for (server_name, _info) in server_info.iter() {
+        // Skip this server if not in allowed list
+        if let Some(allowed_list) = &allowed_servers {
+            if !allowed_list.contains(&server_name.to_string()) {
+                tracing::debug!(server = %server_name, "Skipping server not in allowed list");
+                continue;
+            }
+        }
         // Try to get a client for this server
         match (runner_access.get_server_id)(server_name) {
             Ok(server_id) => {
@@ -255,7 +271,7 @@ async fn handle_tools_list_message(
         request_id,
         json!({
             "tools": all_tools
-        })
+        }),
     );
 
     tracing::debug!(
@@ -268,11 +284,14 @@ async fn handle_tools_list_message(
         &request_id.to_string(),
         "system",
         "tools/list",
-        tools_response
+        tools_response,
     );
 
     // Return immediate acceptance
-    Ok(create_acceptance_response(request_id, "Tools list request received and processed"))
+    Ok(create_acceptance_response(
+        request_id,
+        "Tools list request received and processed",
+    ))
 }
 
 /// Extract server name from tool call request, trying to determine it automatically if not provided
@@ -285,7 +304,7 @@ async fn determine_server_for_tool(
     if let Some(Value::String(s)) = params.get("server") {
         return Ok(s.clone());
     }
-    
+
     // Server name not provided, try to determine it based on tool name
     tracing::info!(
         tool = %tool_name,
@@ -340,8 +359,8 @@ async fn determine_server_for_tool(
 
 /// Handle ping method
 async fn handle_ping_message(
-    proxy: &Arc<Mutex<SSEProxy>>, 
-    request_id: &Value
+    proxy: &Arc<Mutex<SSEProxy>>,
+    request_id: &Value,
 ) -> Result<HttpResponse> {
     tracing::info!("Processing ping request");
 
@@ -354,7 +373,7 @@ async fn handle_ping_message(
         request_id,
         json!({
             "type": "pong"
-        })
+        }),
     );
 
     // Log what we're sending back
@@ -364,15 +383,13 @@ async fn handle_ping_message(
     );
 
     // Send response through event manager
-    event_manager.send_tool_response(
-        &request_id.to_string(), 
-        "system", 
-        "ping", 
-        ping_response
-    );
+    event_manager.send_tool_response(&request_id.to_string(), "system", "ping", ping_response);
 
     // Return immediate acceptance
-    Ok(create_acceptance_response(request_id, "Ping request received and processed"))
+    Ok(create_acceptance_response(
+        request_id,
+        "Ping request received and processed",
+    ))
 }
 
 /// Handle tools/call method
@@ -454,7 +471,10 @@ async fn handle_tools_call_message(
     });
 
     // Return immediate acceptance
-    Ok(create_acceptance_response(request_id, "Tool call received and being processed"))
+    Ok(create_acceptance_response(
+        request_id,
+        "Tool call received and being processed",
+    ))
 }
 
 /// Main SSE entrypoint handler
@@ -484,9 +504,21 @@ pub async fn sse_main_endpoint(
 
     // Create server configuration for client
     let server_info = proxy.get_server_info().lock().await;
+    let runner_access = proxy.get_runner_access();
+
+    // Get allowed servers if configured
+    let allowed_servers = (runner_access.get_allowed_servers)();
+
     let mut servers_map = serde_json::Map::new();
 
     for (_id, info) in server_info.iter() {
+        // Only include allowed servers in the configuration
+        if let Some(allowed_list) = &allowed_servers {
+            if !allowed_list.contains(&info.name) {
+                tracing::debug!(server = %info.name, "Excluding server from initial config - not in allowed list");
+                continue;
+            }
+        }
         servers_map.insert(info.name.clone(), json!(format!("/sse/{}", info.name)));
     }
     let servers = Value::Object(servers_map);
@@ -502,7 +534,7 @@ pub async fn sse_main_endpoint(
     );
 
     // Clone for use in the async block
-    let event_manager_clone = Arc::clone(&event_manager);
+    let event_manager_clone = Arc::clone(event_manager);
 
     // Send initial configuration asynchronously with the correct message_url
     tokio::spawn(async move {
@@ -570,24 +602,19 @@ pub async fn sse_messages(
         method = %parsed.method,
         "Processing client message"
     );
-    
+
     // Dispatch to the appropriate handler based on the method
     if parsed.method.starts_with("notifications/") {
         handle_notification_message(&parsed.method, &parsed.request_id).await
-    } 
-    else if parsed.method == "initialize" {
+    } else if parsed.method == "initialize" {
         handle_initialize_message(&proxy, &parsed.request_id).await
-    } 
-    else if parsed.method == "tools/list" {
+    } else if parsed.method == "tools/list" {
         handle_tools_list_message(&proxy, &parsed.request_id).await
-    } 
-    else if parsed.method == "tools/call" {
+    } else if parsed.method == "tools/call" {
         handle_tools_call_message(&proxy, &parsed.request_id, &parsed.json_value).await
-    } 
-    else if parsed.method == "ping" {
+    } else if parsed.method == "ping" {
         handle_ping_message(&proxy, &parsed.request_id).await
-    } 
-    else {
+    } else {
         // Handle unknown methods
         tracing::warn!(
             req_id = ?parsed.request_id,
@@ -597,9 +624,9 @@ pub async fn sse_messages(
 
         // Create and return an error response
         Ok(create_jsonrpc_error(
-            parsed.request_id, 
-            error_codes::METHOD_NOT_FOUND, 
-            format!("Method '{}' not found", parsed.method)
+            parsed.request_id,
+            error_codes::METHOD_NOT_FOUND,
+            format!("Method '{}' not found", parsed.method),
         ))
     }
 }

@@ -4,7 +4,7 @@
 //! using Actix Web's streaming capabilities.
 
 use crate::sse_proxy::types::{SSEEvent, SSEMessage};
-use crate::transport::json_rpc::{error_codes, JSON_RPC_VERSION, JsonRpcError, JsonRpcResponse}; // Import JSON-RPC types
+use crate::transport::json_rpc::{JSON_RPC_VERSION, JsonRpcError, JsonRpcResponse, error_codes}; // Import JSON-RPC types
 use actix_web::web::Bytes;
 use tokio::sync::broadcast;
 use tracing;

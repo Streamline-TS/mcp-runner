@@ -27,7 +27,7 @@ pub mod error_codes {
     pub const INVALID_PARAMS: i32 = -32602;
     /// Internal error: Internal JSON-RPC error
     pub const INTERNAL_ERROR: i32 = -32603;
-    
+
     // Server-defined errors should be in the range -32000 to -32099
     /// Generic server error for MCP-specific issues
     pub const SERVER_ERROR: i32 = -32000;

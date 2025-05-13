@@ -20,7 +20,6 @@ pub struct ServerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum SSEEvent {
-
     /// Server status update event
     #[serde(rename = "server-status")]
     ServerStatus {
