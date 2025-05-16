@@ -1269,6 +1269,7 @@ dependencies = [
  "futures",
  "futures-lite",
  "jsonrpc-core",
+ "libc",
  "mockall",
  "serde",
  "serde_json",

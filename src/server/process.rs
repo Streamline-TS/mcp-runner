@@ -4,7 +4,7 @@ use crate::error::{Error, Result};
 use async_process::{Child, Command, Stdio};
 use std::fmt;
 use tracing;
-use uuid::Uuid; // Import tracing
+use uuid::Uuid;
 
 /// Unique identifier for a server process
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,27 +1,28 @@
 {
-    "sseProxy": {
-        "allowedServers": ["fetch"],
-        "authenticate": {
-            "bearer": {
-                "token": "your_token"
-            }
-        },
-        "address": "127.0.0.1",
-        "port": 3000,
-        "workers": 4
+  "sseProxy": {
+    "allowedServers": ["fetch", "shell"],
+    "authenticate": {
+      "bearer": {
+        "token": "vhlWcWKL33DU284b-izjLZ6QoceC6drr01JJQM_3rj0"
+      }
     },
-    "mcpServers": {
-      "fetch": {
-        "command": "uvx",
-        "args": ["mcp-server-fetch"]
-      },
-      "filesystem": {
-        "command": "npx",
-        "args": [
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "/tmp"
-        ]
+    "address": "0.0.0.0",
+    "port": 3000,
+    "workers": 4
+  },
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    },
+    "shell": {
+      "command": "uvx",
+      "args": [
+        "mcp-shell-server"
+      ],
+      "env": {
+        "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find"
       }
     }
+  }
 }

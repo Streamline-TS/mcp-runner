@@ -72,6 +72,84 @@ pub mod server;
 pub mod sse_proxy;
 pub mod transport;
 
+// Add a new module for signal handling
+#[cfg(unix)]
+mod signal_handling {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::signal::unix::{SignalKind, signal};
+
+    static SIGNAL_HANDLERS_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+    /// Flag to indicate whether signals should be handled
+    static HANDLE_SIGNALS: AtomicBool = AtomicBool::new(false);
+
+    /// Setup signal handlers for the MCP Runner
+    ///
+    /// This function sets up custom signal handlers for SIGTSTP (Ctrl+Z) and SIGCONT
+    /// to prevent child processes from affecting the parent process when they
+    /// receive these signals.
+    pub async fn setup_signal_handlers() {
+        // Only install signal handlers once
+        if SIGNAL_HANDLERS_INSTALLED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        // Enable signal handling
+        HANDLE_SIGNALS.store(true, Ordering::SeqCst);
+
+        // Spawn a task to handle SIGTSTP (Ctrl+Z)
+        tokio::spawn(async move {
+            // SIGTSTP is signal number 20 on most Unix systems
+            let mut stream = match signal(SignalKind::from_raw(20)) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!("Failed to install SIGTSTP handler: {}", e);
+                    return;
+                }
+            };
+
+            tracing::debug!("SIGTSTP handler installed");
+
+            while let Some(()) = stream.recv().await {
+                if HANDLE_SIGNALS.load(Ordering::SeqCst) {
+                    tracing::info!(
+                        "Received SIGTSTP (Ctrl+Z), intercepting and continuing execution"
+                    );
+
+                    // Custom behavior: log but don't stop the parent process
+                    // This effectively ignores SIGTSTP for the parent process
+                }
+            }
+        });
+
+        // Spawn a task to handle SIGCONT (continue)
+        tokio::spawn(async move {
+            // SIGCONT is signal number 18 on most Unix systems
+            let mut stream = match signal(SignalKind::from_raw(18)) {
+                Ok(stream) => stream,
+                Err(e) => {
+                    tracing::error!("Failed to install SIGCONT handler: {}", e);
+                    return;
+                }
+            };
+
+            tracing::debug!("SIGCONT handler installed");
+
+            while let Some(()) = stream.recv().await {
+                if HANDLE_SIGNALS.load(Ordering::SeqCst) {
+                    tracing::info!("Received SIGCONT, continuing execution");
+                    // Just log the event but let normal SIGCONT handling continue
+                }
+            }
+        });
+    }
+
+    /// Disable signal handlers when shutting down
+    pub fn disable_signal_handlers() {
+        HANDLE_SIGNALS.store(false, Ordering::SeqCst);
+    }
+}
+
 pub use client::McpClient;
 pub use config::Config;
 pub use error::{Error, Result};
@@ -131,6 +209,14 @@ impl McpRunner {
     #[tracing::instrument(skip(config), fields(num_servers = config.mcp_servers.len()))]
     pub fn new(config: Config) -> Self {
         tracing::info!("Creating new McpRunner");
+
+        // Setup signal handlers to prevent child processes from affecting the parent
+        #[cfg(unix)]
+        {
+            // Start the signal handler setup in the background
+            tokio::spawn(signal_handling::setup_signal_handlers());
+        }
+
         Self {
             config,
             servers: HashMap::new(),
@@ -871,12 +957,11 @@ impl McpRunner {
     /// Get tools for all running servers
     ///
     /// This method returns a HashMap of server names to their available tools.
-    /// This is a convenience method that can be called at any time to check tools for all running servers.
+    /// The Result indicates whether listing tools was successful for each server.
     ///
     /// # Returns
     ///
     /// A `HashMap<String, Result<Vec<Tool>>>` containing the tools of all currently running servers.
-    /// The Result indicates whether listing tools was successful for each server.
     ///
     /// # Examples
     ///
@@ -987,5 +1072,15 @@ impl Clone for McpRunner {
             sse_proxy_handle: self.sse_proxy_handle.clone(),
             clients: HashMap::new(), // We don't clone clients as they can't be cleanly cloned
         }
+    }
+}
+
+impl Drop for McpRunner {
+    fn drop(&mut self) {
+        // Cleanup any resources when dropping the McpRunner
+
+        // Disable signal handlers
+        #[cfg(unix)]
+        signal_handling::disable_signal_handlers();
     }
 }
