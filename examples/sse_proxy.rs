@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
 
-    info!("Starting Actix Web SSE proxy example");
+    info!("Starting SSE proxy example");
 
     // Load config with SSE proxy settings
     let config_path = "examples/sse_config.json";

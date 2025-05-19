@@ -1,8 +1,9 @@
 // src/server/process.rs
 use crate::config::ServerConfig;
 use crate::error::{Error, Result};
-use async_process::{Child, Command, Stdio};
 use std::fmt;
+use std::process::Stdio;
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tracing;
 use uuid::Uuid; // Import tracing
 
@@ -106,6 +107,10 @@ impl ServerProcess {
         let mut command = Command::new(&self.config.command);
         command.args(&self.config.args);
 
+        // Set the process group ID to 0 (use new process group)
+        // This prevents SIGTSTP/SIGSTOP from propagating to parent
+        command.process_group(0);
+
         // Set environment variables
         for (key, value) in &self.config.env {
             command.env(key, value);
@@ -141,14 +146,14 @@ impl ServerProcess {
             self.status = ServerStatus::Stopping;
 
             // Try to kill the process gracefully
-            if let Err(e) = child.kill() {
+            if let Err(e) = child.kill().await {
                 tracing::error!("Failed to kill process: {}", e);
                 // We still attempt to wait for the process below, so don't return early
                 // return Err(Error::Process(format!("Failed to kill process: {}", e)));
             }
 
             // Wait for the process to exit
-            match child.status().await {
+            match child.wait().await {
                 Ok(status) => tracing::info!(exit_status = ?status, "Server process stopped"),
                 Err(e) => tracing::warn!("Failed to get exit status after stopping: {}", e),
             }
@@ -165,7 +170,7 @@ impl ServerProcess {
     ///
     /// This method is instrumented with `tracing`.
     #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
-    pub fn take_stdin(&mut self) -> Result<async_process::ChildStdin> {
+    pub fn take_stdin(&mut self) -> Result<ChildStdin> {
         if let Some(child) = &mut self.child {
             child.stdin.take().ok_or_else(|| {
                 Error::Process("Failed to get stdin pipe from child process".to_string())
@@ -179,7 +184,7 @@ impl ServerProcess {
     ///
     /// This method is instrumented with `tracing`.
     #[tracing::instrument(skip(self), fields(server_name = %self.name, server_id = %self.id))]
-    pub fn take_stdout(&mut self) -> Result<async_process::ChildStdout> {
+    pub fn take_stdout(&mut self) -> Result<ChildStdout> {
         if let Some(child) = &mut self.child {
             child.stdout.take().ok_or_else(|| {
                 Error::Process("Failed to get stdout pipe from child process".to_string())
@@ -190,7 +195,7 @@ impl ServerProcess {
     }
 
     /// Take the stderr pipe from the process
-    pub fn take_stderr(&mut self) -> Result<async_process::ChildStderr> {
+    pub fn take_stderr(&mut self) -> Result<ChildStderr> {
         if let Some(child) = &mut self.child {
             child.stderr.take().ok_or_else(|| {
                 Error::Process("Failed to get stderr pipe from child process".to_string())

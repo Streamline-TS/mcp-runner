@@ -1,9 +1,9 @@
 {
     "sseProxy": {
-        "allowedServers": ["fetch"],
+        "allowedServers": ["fetch", "shell"],
         "authenticate": {
             "bearer": {
-                "token": "your_token"
+                "token": "vhlWcWKL33DU284b-izjLZ6QoceC6drr01JJQM_3rj0"
             }
         },
         "address": "127.0.0.1",
@@ -22,6 +22,15 @@
           "@modelcontextprotocol/server-filesystem",
           "/tmp"
         ]
+      },
+      "shell": {
+        "command": "uvx",
+        "args": [
+          "mcp-shell-server"
+        ],
+        "env": {
+          "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find"
+        }
       }
     }
 }

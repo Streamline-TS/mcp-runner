@@ -1,17 +1,19 @@
 #![cfg(test)]
 
-use async_process::{Command, Stdio};
 use mcp_runner::transport::StdioTransport;
 use mcp_runner::transport::json_rpc::JsonRpcRequest;
 use serde_json::json;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 use tempfile::tempdir;
+use tokio::process::Command;
 
 // Helper function to create a mock script that outputs both JSON and non-JSON content
-fn create_mock_script() -> Result<PathBuf, Box<dyn std::error::Error>> {
+// Returns both the script path and the tempdir to ensure proper cleanup
+fn create_mock_script() -> Result<(PathBuf, tempfile::TempDir), Box<dyn std::error::Error>> {
     // Create a temp directory
     let dir = tempdir()?;
     let script_path = dir.path().join("mock_server.sh");
@@ -53,16 +55,15 @@ sleep 1
         std::fs::set_permissions(&script_path, permissions)?;
     }
 
-    // Return the path but ensure tempdir isn't dropped
-    // We need to leak the tempdir to keep the script available
-    std::mem::forget(dir);
-    Ok(script_path)
+    // Return both the path and tempdir so the caller can manage lifetimes
+    Ok((script_path, dir))
 }
 
 #[tokio::test]
 async fn test_stdio_transport_non_json_filtering() -> Result<(), Box<dyn std::error::Error>> {
     // Create a mock script that outputs both JSON and non-JSON content
-    let script_path = create_mock_script()?;
+    // Keep the tempdir in scope to avoid deletion until test completes
+    let (script_path, _tempdir) = create_mock_script()?;
 
     // Start the mock script as a child process
     let mut child = Command::new(&script_path)
@@ -111,8 +112,8 @@ async fn test_stdio_transport_non_json_filtering() -> Result<(), Box<dyn std::er
     let error_response = transport.send_request(error_request).await;
     assert!(error_response.is_err());
 
-    // Clean up - fix: remove the .await
-    child.kill()?;
+    // Clean up - we must await the future returned by kill()
+    child.kill().await?;
 
     Ok(())
 }
@@ -140,8 +141,8 @@ async fn test_stdio_transport_empty_line_handling() -> Result<(), Box<dyn std::e
     // To verify this, we could set up a response handler, but that's complex for a unit test
     // Instead, let's just make sure the transport successfully closes
 
-    // Clean up - fix: remove the .await
-    child.kill()?;
+    // Clean up - we must await the future returned by kill()
+    child.kill().await?;
 
     Ok(())
 }

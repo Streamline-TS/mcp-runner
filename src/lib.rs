@@ -229,7 +229,7 @@ impl McpRunner {
             .collect();
         tracing::debug!(servers_to_start = ?server_names);
 
-        // Start servers sequentially but with improved error handling
+        // Start servers sequentially
         let mut ids = Vec::new();
         let mut errors = Vec::new();
 
@@ -296,15 +296,15 @@ impl McpRunner {
     ///
     ///     // Start all servers and proxy if configured
     ///     let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
-    ///     
+    ///
     ///     // Check if servers started successfully
     ///     let server_ids = server_ids?;
     ///     println!("Started {} servers", server_ids.len());
-    ///     
+    ///
     ///     if proxy_started {
     ///         println!("SSE proxy started successfully");
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -392,11 +392,11 @@ impl McpRunner {
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let mut runner = McpRunner::from_config_file("config.json")?;
     ///     runner.start_all_with_proxy().await;
-    ///     
+    ///
     ///     // Later, stop everything
     ///     runner.stop_all_servers().await?;
     ///     println!("All servers and proxy stopped");
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -657,12 +657,12 @@ impl McpRunner {
     /// #[tokio::main]
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let runner = McpRunner::from_config_file("config.json")?;
-    ///     
+    ///
     ///     if runner.is_sse_proxy_configured() {
     ///         let proxy_config = runner.get_sse_proxy_config()?;
     ///         println!("SSE proxy will listen on {}:{}", proxy_config.address, proxy_config.port);
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -697,18 +697,18 @@ impl McpRunner {
     /// #[tokio::main]
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let mut runner = McpRunner::from_config_file("config.json")?;
-    ///     
+    ///
     ///     // Start servers and proxy
     ///     let (server_ids, proxy_started) = runner.start_all_with_proxy().await;
     ///     let _server_ids = server_ids?;
-    ///     
+    ///
     ///     if proxy_started {
     ///         // Access the running proxy handle
     ///         let proxy_handle = runner.get_sse_proxy_handle()?;
     ///         let config = proxy_handle.config();
     ///         println!("SSE proxy is running on {}:{}", config.address, config.port);
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -741,13 +741,13 @@ impl McpRunner {
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let mut runner = McpRunner::from_config_file("config.json")?;
     ///     runner.start_all_servers().await?;
-    ///     
+    ///
     ///     // Check status of all servers
     ///     let statuses = runner.get_all_server_statuses();
     ///     for (name, status) in statuses {
     ///         println!("Server '{}' status: {:?}", name, status);
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -788,13 +788,13 @@ impl McpRunner {
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let mut runner = McpRunner::from_config_file("config.json")?;
     ///     runner.start_server("fetch").await?;
-    ///     
+    ///
     ///     // Get tools for a specific server
     ///     let tools = runner.get_server_tools("fetch").await?;
     ///     for tool in tools {
     ///         println!("Tool: {} - {}", tool.name, tool.description);
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```
@@ -887,7 +887,7 @@ impl McpRunner {
     /// async fn main() -> mcp_runner::Result<()> {
     ///     let mut runner = McpRunner::from_config_file("config.json")?;
     ///     runner.start_all_servers().await?;
-    ///     
+    ///
     ///     // Get tools for all servers
     ///     let all_tools = runner.get_all_server_tools().await;
     ///     for (server_name, tools_result) in all_tools {
@@ -901,7 +901,7 @@ impl McpRunner {
     ///             Err(e) => println!("Failed to get tools for '{}': {}", server_name, e),
     ///         }
     ///     }
-    ///     
+    ///
     ///     Ok(())
     /// }
     /// ```

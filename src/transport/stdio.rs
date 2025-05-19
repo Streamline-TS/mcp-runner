@@ -1,12 +1,12 @@
 use super::json_rpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, error_codes};
 use crate::error::{Error, Result};
 use crate::transport::Transport;
-use async_process::{ChildStdin, ChildStdout};
 use async_trait::async_trait;
-use futures_lite::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{self, Instrument, span};
@@ -24,7 +24,7 @@ use uuid::Uuid;
 /// ```no_run
 /// use mcp_runner::transport::StdioTransport;
 /// use mcp_runner::error::Result;
-/// use async_process::{Child, Command};
+/// use tokio::process::{Child, Command};
 /// use serde_json::json;
 ///
 /// #[tokio::main]

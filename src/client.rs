@@ -111,7 +111,7 @@ pub struct Resource {
 /// # // it just verifies that it compiles correctly.
 /// use mcp_runner::{McpClient, transport::StdioTransport, error::Result};
 /// use serde_json::{json, Value};
-/// use async_process::{ChildStdin, ChildStdout};
+/// use tokio::process::{ChildStdin, ChildStdout};
 ///
 /// # // Mock implementation for the example
 /// # fn get_mock_stdin_stdout() -> (ChildStdin, ChildStdout) {

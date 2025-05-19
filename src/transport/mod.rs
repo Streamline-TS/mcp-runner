@@ -131,7 +131,8 @@ pub fn create_transport_for_config(
     server_config: &crate::config::ServerConfig,
 ) -> Result<StdioTransport> {
     use crate::error::Error;
-    use async_process::{Command, Stdio as AsyncStdio};
+    use std::process::Stdio as AsyncStdio;
+    use tokio::process::Command;
     use tracing;
 
     tracing::debug!(server = %server_name, "Creating transport for server");
